@@ -5,3 +5,36 @@ date: "2026-01-02"
 output: html_document
 ---
 
+# GitHub Setup
+
+I am using GitHub as a form of version control, so I will need to connect this document to the repository on GitHub. While the version set up was already created in tandem to this document, RStudio will often require verification before you can push any committed changes to your code. 
+
+*This section is only needed for those modifying code*
+
+Token: ge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
+
+```{r Git Setup, include = FALSE, message = FALSE, warning = FALSE}
+
+# We will need the usethis package so that we can connect our GitHub
+
+install.packages("usethis")
+library(usethis)
+
+# Using the usethis package we can tell R which user will be pushing new versions to the associated repository
+use_git_config(user.name = "BLLoftin96", user.email = "brittanieloftin@u.boisestate.edu")
+
+# This will show you who is logged in and will give you options following options: 1) Abort update with error, and keep the existing credentials, 2) Replace these credentials, and 3) See the password/token. If this is a fresh session, I would recommend the replace option and re-enter your current password/token to ensure there is no connection error. 
+gitcreds::gitcreds_set()
+
+# This will verify any changes
+gitcreds::gitcreds_get()
+
+```
+
+
+# Background
+
+
+
+# Goals
+
