@@ -7,11 +7,10 @@ output: html_document
 
 # GitHub Setup
 
-I am using GitHub as a form of version control, so I will need to connect this document to the repository on GitHub. While the version set up was already created in tandem to this document, RStudio will often require verification before you can push any committed changes to your code. 
+I am using GitHub as a form of version control, so I will need to connect this document to the repository on GitHub. While the version set up was already created in tandem to this document, RStudio will often require verification before you can push any committed changes to your code.
 
-*This section is only needed for those modifying code*
+**This section is only needed for those modifying code**
 
-Token: ge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
 
 ```{r Git Setup, include = FALSE, message = FALSE, warning = FALSE}
 
@@ -34,10 +33,12 @@ gitcreds::gitcreds_get()
 
 ```
 
-
 # Background
 
+The Cassia Crossbill (*Loxia sinesciuris*) is Idaho's only endemic species whose limited range and diet put the species at risk for extinction (*FIND CITATIONS FROM NWCASC ADVISOR GRANT RE: IDFWS AND CACR STATUS*; Parmesan 2006, Benkman 1993). Similar to other crossbills whose crossed mandibles aid in prying open the conifer cones of a single species (or a variety of species) to then forage on the seeds inside (Newton 1972, Benkman 1978a, Benkman 1978b, Benkman 1988a, Benkman 1988b, Benkman 1989, Benkman 1990, Benkman 1992, Benkman 1993, Benkman and Lindholm 1991). Cassia Crossbills feed almost exclusively on the serotinous cones of Rocky Mountain lodgepole pine (*Pinus contorta latifolia*) and are unable to survive competition with other crossbills for other seeds elsewhere (Benkman et al. 2001, Benkman et al. 2012, Benkman 2016). Unlike the far more common Red Crossbill (*Loxia curvirostra*) that are nomadic and able to travel vast distances for food, the Cassia Crossbill have a highly restricted range limited to the 67km2 of Rocky Mountain lodgepole pine forest found on two small mountain ranges in Idaho: the South Hills and the Albion Mountains (Benkman et al. 2009, Behl and Benkman 2018; Figure 1). Despite lodgepole pine existing in other areas, the Cassia Crossbill was able to evolve in this region due to the lack of red squirrels (*Tamiasciurus hudsonicus*) which typically preemptively out-compete crossbills for cones (Benkman 1999, Smith and Benkman 2007). 
 
+![Figure 1: Map showing the South Hills and Albion Mountain range. The white outline marks the boundary of the Sawtooth National Forest](C:/Users/britt/OneDrive/Pictures/CassiaSites1.png)
+
+The combination of being a permanent resident restricted to high elevation environments and dependent on a singular resource makes the Cassia Crossbill extremely sensitive to habitat alteration or loss (Benkman 1993). For example, in 2020 the Badger Fire swept through the western portion of the South Hills and destroyed approximately 20% of the available lodgepole in the region. In subsequent years, annual trends in the population declines significantly (*FIND CITATION FROM NW CASC GRANTS OR ANNUAL REPORTS & FIGURES*). Wildfires in this region -like many other areas in the western US - are predicted to increase in frequency and intensity in the future (Brice et al. 2020, Rogers et al. 2020). Wildfires can damage or destroy the mature stands of lodgepole pine which contain the serotinous cones - cones sealed in a resin - that Cassia Crossbills forage on. However, when these areas experience stand-replacing fires the resin on the serotinous cones melts and seeds inside have the potential to germinate and create a new stand. Serotinous cones in this region may also be affected by high summer temperatures which some evidence has shown to cause these cones to open prematurely and allowing other species to access a once exclusive resource (Benkman et al. 2001, Benkman et al. 2012, Santisteban et al. 2012, Benkman 2016).
 
 # Goals
-
