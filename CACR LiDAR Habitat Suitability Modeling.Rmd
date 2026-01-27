@@ -42,3 +42,103 @@ The Cassia Crossbill (*Loxia sinesciuris*) is Idaho's only endemic species whose
 The combination of being a permanent resident restricted to high elevation environments and dependent on a singular resource makes the Cassia Crossbill extremely sensitive to habitat alteration or loss (Benkman 1993). For example, in 2020 the Badger Fire swept through the western portion of the South Hills and destroyed approximately 20% of the available lodgepole in the region. In subsequent years, annual trends in the population declines significantly (*FIND CITATION FROM NW CASC GRANTS OR ANNUAL REPORTS & FIGURES*). Wildfires in this region -like many other areas in the western US - are predicted to increase in frequency and intensity in the future (Brice et al. 2020, Rogers et al. 2020). Wildfires can damage or destroy the mature stands of lodgepole pine which contain the serotinous cones - cones sealed in a resin - that Cassia Crossbills forage on. However, when these areas experience stand-replacing fires the resin on the serotinous cones melts and seeds inside have the potential to germinate and create a new stand. Serotinous cones in this region may also be affected by high summer temperatures which some evidence has shown to cause these cones to open prematurely and allowing other species to access a once exclusive resource (Benkman et al. 2001, Benkman et al. 2012, Santisteban et al. 2012, Benkman 2016).
 
 # Goals
+
+
+# Data
+
+LiDAR data was taken from [existing data from the Idaho LiDAR Consortium](https://www.idaholidar.org/existing-lidar-data/) and utilizing 5 different projects. Further detail regarding flight information will be added below. 
+
+1. Southern ID 2018 #12 - South Hills (**Note: Southern ID 2018 #12 is stored as Part 21 and Part 22**)
+2. Southern ID 2018 #15 - South Hills (**Note: Southern ID 2018 #15 is stored as 07_Cassia**)
+3. Southern ID 2018 #17 - E. South Hills and W. Albions
+4. Elko NW (2021 imagery) - South Hills - 196,727 ACRES
+5. Southern ID 2018 # - E. Albions
+
+# Code
+
+## Install Packages
+
+```{r Install Packages}
+# Install
+
+install.packages('lidR')
+install.packages('sf')
+install.packages('lidRviewer', repos = c('https://r-lidar.r-universe.dev'))
+install.packages('dplyr')
+install.packages('terra')
+
+# Load
+library(lidR)
+library(sf)
+library(lidRviewer)
+library(dplyr)
+library(terra)
+```
+
+
+## Data Inspection 
+
+Here I am selecting a few locations from around my study area to visually inspect to see if the point cloud even reflects reality. To do this, I am using a package called lidRviewer that works in tandem with the lidR package to allow you to visualize the point cloud of selected tiles. The view acts by opening a new window that you can interface with - while open R cannot run other sections of code. 
+
+Commands: 
+- Rotate with left mouse button
+- Zoom with mouse wheel
+- Pan with right mouse button
+- Keyboard r or g or b to color with RGB
+- Keyboard z to color with Z
+- Keyboard i to color with Intensity
+- Keyboard c to color with Classification
+- Keyboard + or - to change the point size
+- Keyboard l to enable/disable eyes-dome lightning
+
+First tile, I will look at is one from the Elko NW that shows Father and Sons Campground in the South Hills (11TQG320710)
+
+```{r Father and Sons Campground Viewer Inspection}
+
+# Load the Tile containing Father and Sons Campground
+F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG320710.laz')
+
+# Visually inspect
+lidRviewer::view(F_S_Camp)  
+```
+
+Shows a lot of white points (unclassified points - white) so we will likely need to classify. I also saw one or two points that appearred to be an error - point above tree line.
+
+Next, I will look at Bear Gulch Campground in the South Hills (11TQG1155770) from the Southern Idaho 2018_12.
+
+```{r Bear Gulch Campground Viewer Inspection}
+# Load the Tile containing Father and Sons Campground
+B_G_Camp = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG155770.laz')
+
+# Visually inspect
+lidRviewer::view(B_G_Camp)
+```
+
+I see lots of error points and unclassified points.
+
+Last, I will look at Thompson Flat Campground in the Albions (12TTM835890) from the Southern Idaho 2018_17.
+
+```{r Thompson Flat Campground Viewer Inspection}
+# Load the Tile containing Father and Sons Campground
+T_F_Camp = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835890.laz')
+
+# Visually inspect
+lidRviewer::view(T_F_Camp)
+```
+
+The worst one. So many error points - maybe there was smoke when they flew the plane.
+
+Based on this information, we should reclassify these tiles. We should begin by working with these tiles to create a general pipeline for classification (which we can then use the **batch** function to do to all tiles).
+
+## Classification Pipeline (3 Tiles)
+
+### Filter Noise
+
+When looking at the datasets there are some obvious levels of noise (in fact the amount of noise increased with each tile we examined). Filtering out these extraneous high and low (below the scene) points will help to reduce error and get us closer to the actual landscape. 
+
+First let's try the **ivc (isolated voxel function)** from lidR to filter the noise by searching the returns for ones that are far away from neighbors.Let's try using a filter where we filter points that are no more than 10 returns within a resolution of 3m. We then filter the points by removing those that are classified as noise (the LASNOISE = 18).
+
+```{r Filter Noise }
+
+```
+
