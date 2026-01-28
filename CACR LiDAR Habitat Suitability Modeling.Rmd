@@ -11,7 +11,6 @@ I am using GitHub as a form of version control, so I will need to connect this d
 
 **This section is only needed for those modifying code**
 
-
 ```{r Git Setup, include = FALSE, message = FALSE, warning = FALSE}
 
 # We will need the usethis package so that we can connect our GitHub
@@ -35,7 +34,7 @@ gitcreds::gitcreds_get()
 
 # Background
 
-The Cassia Crossbill (*Loxia sinesciuris*) is Idaho's only endemic species whose limited range and diet put the species at risk for extinction (*FIND CITATIONS FROM NWCASC ADVISOR GRANT RE: IDFWS AND CACR STATUS*; Parmesan 2006, Benkman 1993). Similar to other crossbills whose crossed mandibles aid in prying open the conifer cones of a single species (or a variety of species) to then forage on the seeds inside (Newton 1972, Benkman 1978a, Benkman 1978b, Benkman 1988a, Benkman 1988b, Benkman 1989, Benkman 1990, Benkman 1992, Benkman 1993, Benkman and Lindholm 1991). Cassia Crossbills feed almost exclusively on the serotinous cones of Rocky Mountain lodgepole pine (*Pinus contorta latifolia*) and are unable to survive competition with other crossbills for other seeds elsewhere (Benkman et al. 2001, Benkman et al. 2012, Benkman 2016). Unlike the far more common Red Crossbill (*Loxia curvirostra*) that are nomadic and able to travel vast distances for food, the Cassia Crossbill have a highly restricted range limited to the 67km2 of Rocky Mountain lodgepole pine forest found on two small mountain ranges in Idaho: the South Hills and the Albion Mountains (Benkman et al. 2009, Behl and Benkman 2018; Figure 1). Despite lodgepole pine existing in other areas, the Cassia Crossbill was able to evolve in this region due to the lack of red squirrels (*Tamiasciurus hudsonicus*) which typically preemptively out-compete crossbills for cones (Benkman 1999, Smith and Benkman 2007). 
+The Cassia Crossbill (*Loxia sinesciuris*) is Idaho's only endemic species whose limited range and diet put the species at risk for extinction (*FIND CITATIONS FROM NWCASC ADVISOR GRANT RE: IDFWS AND CACR STATUS*; Parmesan 2006, Benkman 1993). Similar to other crossbills whose crossed mandibles aid in prying open the conifer cones of a single species (or a variety of species) to then forage on the seeds inside (Newton 1972, Benkman 1978a, Benkman 1978b, Benkman 1988a, Benkman 1988b, Benkman 1989, Benkman 1990, Benkman 1992, Benkman 1993, Benkman and Lindholm 1991). Cassia Crossbills feed almost exclusively on the serotinous cones of Rocky Mountain lodgepole pine (*Pinus contorta latifolia*) and are unable to survive competition with other crossbills for other seeds elsewhere (Benkman et al. 2001, Benkman et al. 2012, Benkman 2016). Unlike the far more common Red Crossbill (*Loxia curvirostra*) that are nomadic and able to travel vast distances for food, the Cassia Crossbill have a highly restricted range limited to the 67km2 of Rocky Mountain lodgepole pine forest found on two small mountain ranges in Idaho: the South Hills and the Albion Mountains (Benkman et al. 2009, Behl and Benkman 2018; Figure 1). Despite lodgepole pine existing in other areas, the Cassia Crossbill was able to evolve in this region due to the lack of red squirrels (*Tamiasciurus hudsonicus*) which typically preemptively out-compete crossbills for cones (Benkman 1999, Smith and Benkman 2007).
 
 ![Figure 1: Map showing the South Hills and Albion Mountain range. The white outline marks the boundary of the Sawtooth National Forest](C:/Users/britt/OneDrive/Pictures/CassiaSites1.png)
 
@@ -43,16 +42,15 @@ The combination of being a permanent resident restricted to high elevation envir
 
 # Goals
 
-
 # Data
 
-LiDAR data was taken from [existing data from the Idaho LiDAR Consortium](https://www.idaholidar.org/existing-lidar-data/) and utilizing 5 different projects. Further detail regarding flight information will be added below. 
+LiDAR data was taken from [existing data from the Idaho LiDAR Consortium](https://www.idaholidar.org/existing-lidar-data/) and utilizing 5 different projects. Further detail regarding flight information will be added below.
 
-1. Southern ID 2018 #12 - South Hills (**Note: Southern ID 2018 #12 is stored as Part 21 and Part 22**)
-2. Southern ID 2018 #15 - South Hills (**Note: Southern ID 2018 #15 is stored as 07_Cassia**)
-3. Southern ID 2018 #17 - E. South Hills and W. Albions
-4. Elko NW (2021 imagery) - South Hills - 196,727 ACRES
-5. Southern ID 2018 # - E. Albions
+1.  Southern ID 2018 #12 - South Hills (**Note: Southern ID 2018 #12 is stored as Part 21 and Part 22**)
+2.  Southern ID 2018 #15 - South Hills (**Note: Southern ID 2018 #15 is stored as 07_Cassia**)
+3.  Southern ID 2018 #17 - E. South Hills and W. Albions
+4.  Elko NW (2021 imagery) - South Hills - 196,727 ACRES
+5.  Southern ID 2018 \# - E. Albions
 
 # Code
 
@@ -77,21 +75,11 @@ library(terra)
 library(RCSF)
 ```
 
+## Data Inspection
 
-## Data Inspection 
+Here I am selecting a few locations from around my study area to visually inspect to see if the point cloud even reflects reality. To do this, I am using a package called lidRviewer that works in tandem with the lidR package to allow you to visualize the point cloud of selected tiles. The view acts by opening a new window that you can interface with - while open R cannot run other sections of code.
 
-Here I am selecting a few locations from around my study area to visually inspect to see if the point cloud even reflects reality. To do this, I am using a package called lidRviewer that works in tandem with the lidR package to allow you to visualize the point cloud of selected tiles. The view acts by opening a new window that you can interface with - while open R cannot run other sections of code. 
-
-Commands: 
-- Rotate with left mouse button
-- Zoom with mouse wheel
-- Pan with right mouse button
-- Keyboard r or g or b to color with RGB
-- Keyboard z to color with Z
-- Keyboard i to color with Intensity
-- Keyboard c to color with Classification
-- Keyboard + or - to change the point size
-- Keyboard l to enable/disable eyes-dome lightning
+Commands: - Rotate with left mouse button - Zoom with mouse wheel - Pan with right mouse button - Keyboard r or g or b to color with RGB - Keyboard z to color with Z - Keyboard i to color with Intensity - Keyboard c to color with Classification - Keyboard + or - to change the point size - Keyboard l to enable/disable eyes-dome lightning
 
 First tile, I will look at is one from the Elko NW that shows Father and Sons Campground in the South Hills (11TQG320710)
 
@@ -103,6 +91,28 @@ F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG320710
 # Visually inspect
 lidRviewer::view(F_S_Camp)  
 ```
+
+I get a warning that there are 2343136 points that are withheld, so we will remove these. We also get a warning that 234136 are synthetic points so we will keep those.
+
+*Note: reasoning for withholding 'withheld' points:*
+
+-   *they are points the data provider recommends you ignore*
+
+-   *overlap in flight lines*
+
+-   *edge-of-scan artifacts*
+
+-   *points kept for QA but not analysis*
+
+-   *points excluded from the official product*
+
+*I am keeping the synthetic points because:*
+
+-   *adds improved surface continuity*
+
+-   *points are generated during processing*
+
+-   *densified surfaces in workflows*
 
 Shows a lot of white points (unclassified points - white) so we will likely need to classify. I also saw one or two points that appearred to be an error - point above tree line.
 
@@ -116,7 +126,7 @@ B_G_Camp = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG155770.laz')
 lidRviewer::view(B_G_Camp)
 ```
 
-I see lots of error points and unclassified points.
+I get a warning that there are 3720655  points that are withheld, so we will remove these. We also get a warning that 3720655  are synthetic points so we will keep those. I see lots of error points and unclassified points.
 
 Last, I will look at Thompson Flat Campground in the Albions (12TTM835890) from the Southern Idaho 2018_17.
 
@@ -128,19 +138,19 @@ T_F_Camp = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835890.laz')
 lidRviewer::view(T_F_Camp)
 ```
 
-The worst one. So many error points - maybe there was smoke when they flew the plane.
+I get a warning that there are 318539 points that are withheld, so we will remove these. We also get a warning that 318539 are synthetic points so we will keep those. The worst one. So many error points - maybe there was smoke when they flew the plane.
 
 Based on this information, we should reclassify these tiles. We should begin by working with these tiles to create a general pipeline for classification (which we can then use the **batch** function to do to all tiles).
 
 ## Classification Pipeline (3 Tiles)
 
-Here our goal is to create a pipeline by generating code using these 3 tiles. We should then be able to batch these to other tiles in the study area. Process steps: 
+Here our goal is to create a pipeline by generating code using these 3 tiles. We should then be able to batch these to other tiles in the study area. Process steps:
 
-1. Noise Filter - start with this in case there are unusual noise below ground (may accidentally create weird geometry and makes ground classification more stable)
+1.  Noise Filter - start with this in case there are unusual noise below ground (may accidentally create weird geometry and makes ground classification more stable)
 
-2. Classify Ground Points
+2.  Classify Ground Points
 
-3. Second cleanup of noise - if needed 
+3.  Second cleanup of noise - if needed
 
 ### Filter Noise
 
@@ -148,69 +158,81 @@ When looking at the datasets there are some obvious levels of noise (in fact the
 
 First let's try the **ivf (isolated voxel function)** from lidR to filter the noise by searching the returns for ones that are far away from neighbors.Let's try using a filter where we filter points that are no more than 12 returns within a resolution of 4m. We then filter the points by removing those that are classified as noise (the LASNOISE = 18).
 
-Overall, we we should check if the IVF being too strict by either counting how many points were removed. Commonly, < 1-2% is fine but anything greater than 5% should be looked at visually. We will also visually check the filters to see if they were appropriate and we may play with parameters to see which produces the best result.
+Overall, we we should check if the IVF being too strict by either counting how many points were removed. Commonly, \< 1-2% is fine but anything greater than 5% should be looked at visually. We will also visually check the filters to see if they were appropriate and we may play with parameters to see which produces the best result.
 
+Additionally, we will be filtering the withheld flagged points since they are not recommended for use.
 
 ```{r Filter Noise - IVF 4m & 12 returns}
 # Father and Sons
-# Filter High Noise
-F_S_Camp_4_12_IVC <- classify_noise(F_S_Camp, ivf(res = 4, n = 12))
 
-unique(F_S_Camp_4_12_IVC@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-prior_filter_FSCamp <- npoints(F_S_Camp_4_12_IVC) # number of points before filter - 34099924
+# Filter Withheld
+FSCamp_Filter <- filter_poi(F_S_Camp, !Withheld_flag) # Start: 31756788
 
-F_S_Camp_412_Filter = filter_poi(F_S_Camp_4_12_IVC, Classification!= LASNOISE)
-after_filter_FSCamp <- npoints(F_S_Camp_412_Filter) # number of points before filter - 34099379 - looks like ~545 points were removed -> less than 1%
-lidRviewer::view(F_S_Camp_412_Filter) # visually inspect - looks pretty good with no obvious noise
+# Filter  Noise
+FSCamp_Filter <- classify_noise(FSCamp_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(FSCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+FSCamp_Filter = filter_poi(FSCamp_Filter, !Classification %in% c(7L, 18L)) # End: 31756299
+ 
+lidRviewer::view(FSCamp_Filter) # visually inspect - looks pretty good with no obvious noise
 lidRviewer::view(F_S_Camp)  # if you need to compare
 
-# Filter low Noise
-
-F_S_Camp_NoiseFilter = filter_poi(F_S_Camp_412_Filter, Classification!= 7L)
-after_filter_FSCamp2 <- npoints(F_S_Camp_NoiseFilter) # number of points before filter - 34097223 
-lidRviewer::view(F_S_Camp_NoiseFilter) # visually inspect - looks pretty good with no obvious noise
 
 # Bear Gulch
+# Filter Withheld
+BGCamp_Filter <- filter_poi(B_G_Camp, !Withheld_flag) # 48370837
+
 # Classify all returns 
-B_G_Camp_4_12_IVC <- classify_noise(B_G_Camp, ivf(res = 4, n = 12))
+BGCamp_Filter <- classify_noise(BGCamp_Filter, ivf(res = 4, n = 12))
 
-unique(B_G_Camp_4_12_IVC@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 5 (high vegetation), 7 (low vegetation/low noise), and 18 (high noise). 
-prior_filter_BGCamp <- npoints(B_G_Camp_4_12_IVC) # number of points before filter 52091492
+unique(BGCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 5 (high vegetation), 7 (low vegetation/low noise), and 18 (high noise). 
+# in the code above we see that there are no 18 or 7 classified points so I doubt the filtering will do much
 
-B_G_Camp_412_Filter = filter_poi(B_G_Camp_4_12_IVC, Classification!= LASNOISE)
-after_filter_BGCamp <- npoints(B_G_Camp_412_Filter) # number of points before filter - 52091413 - looks like ~79 points were removed
-lidRviewer::view(B_G_Camp_412_Filter) # visually inspect - looks pretty good with no obvious noise
+BGCamp_Filter = filter_poi(BGCamp_Filter, !Classification %in% c(7L, 18L)) # End with 48370837
+
+lidRviewer::view(BGCamp_Filter) # visually inspect - looks pretty good with no obvious noise
 lidRviewer::view(B_G_Camp) # if you need to compare
-
-# Filter low Noise
-
-B_G_Camp_NoiseFilter = filter_poi(B_G_Camp_412_Filter, Classification!= 7L)
-after_filter_BGCamp2 <- npoints(B_G_Camp_NoiseFilter) # number of points before filter -  52091279
-lidRviewer::view(B_G_Camp_NoiseFilter) # visually inspect - looks pretty good with no obvious noise
 
 
 # Thompson Flat
-T_F_Camp_4_12_IVC <- classify_noise(T_F_Camp, ivf(res = 4, n = 12))
+# Filter Withheld
+TFCamp_Filter <- filter_poi(T_F_Camp, !Withheld_flag) # start:
 
-unique(T_F_Camp_4_12_IVC@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 5 (high vegetation), 7 (low vegetation/low noise), and 18 (high noise). 
-prior_filter_TFCamp <- npoints(T_F_Camp_4_12_IVC) # number of points before filter - 58340605
+# Classify
+TFCamp_Filter <- classify_noise(TFCamp_Filter, ivf(res = 4, n = 12)) # Start: 58022066
 
-T_F_Camp_412_Filter = filter_poi(T_F_Camp_4_12_IVC, Classification!= LASNOISE)
-after_filter_TFCamp <- npoints(T_F_Camp_412_Filter) # number of points before filter - 58339116 - looks like ~1489 points were removed -> less than 1%
-lidRviewer::view(T_F_Camp_412_Filter) # visually inspect - looks pretty good with no obvious noise
+unique(TFCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 5 (high vegetation), 7 (low vegetation/low noise), and 18 (high noise). 
+
+# Again no 7 or 18 class
+TFCamp_Filter = filter_poi(TFCamp_Filter, !Classification %in% c(7L, 18L)) # End: 58022066
+
+lidRviewer::view(TFCamp_Filter) # visually inspect - looks pretty good with no obvious noise
 lidRviewer::view(T_F_Camp) # if you need to compare
 
-# Filter low Noise
-
-T_F_Camp_NoiseFilter = filter_poi(T_F_Camp_412_Filter, Classification!= 7L)
-after_filter_TFCamp2 <- npoints(T_F_Camp_NoiseFilter) # number of points before filter -  
-lidRviewer::view(T_F_Camp_NoiseFilter) # visually inspect - looks pretty good with no obvious noise
 ```
-
 
 ### Ground Classification
 
 Working in mountainous forests, we will need to keep track of the parameters that we use. It is standard to use a cloth simulation filter which is available through the LiDAR function csf(). With the csf function, the LiDAR point cloud is inverted, and a simulation of a “rigid cloth” is draped over the inverted point cloud. The simulated cloth surface is then used to determine which points are associated with the ground.
+
+CSF is controlled by:
+
+-   how stiff the 'cloth' is --\> rigidity
+
+-   how coarse the 'cloth' mesh is --\> cloth resolution
+
+-   much much sagging is allowed --\> slope smoothing
+
+We will also be trying the PMF (progressive morphological filter) which creates a small window and fins the low points where it then gradually increases the window size and allow higher thresholds as terrain scale increases.
+
+PMF is controlled by:
+
+-   window size(s) (scale of terrain features)
+
+-   height threshold (how much deviation from the ground is allowed)
+
+**Here we will begin with starting with the default then check the DTM and tune from there. Since we are classifying these ourselves, we should be on the lookout for DTM pits, sinks, or 'wavy' terrain**
 
 Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
 
@@ -251,4 +273,3 @@ plot(Full_slope)
 
 # Thompson Flat
 ```
-
