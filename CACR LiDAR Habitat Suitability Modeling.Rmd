@@ -66,6 +66,7 @@ install.packages('sf')
 install.packages('lidRviewer', repos = c('https://r-lidar.r-universe.dev'))
 install.packages('dplyr')
 install.packages('terra')
+install.packages('RCSF')
 
 # Load
 library(lidR)
@@ -73,6 +74,7 @@ library(sf)
 library(lidRviewer)
 library(dplyr)
 library(terra)
+library(RCSF)
 ```
 
 
@@ -132,13 +134,121 @@ Based on this information, we should reclassify these tiles. We should begin by 
 
 ## Classification Pipeline (3 Tiles)
 
+Here our goal is to create a pipeline by generating code using these 3 tiles. We should then be able to batch these to other tiles in the study area. Process steps: 
+
+1. Noise Filter - start with this in case there are unusual noise below ground (may accidentally create weird geometry and makes ground classification more stable)
+
+2. Classify Ground Points
+
+3. Second cleanup of noise - if needed 
+
 ### Filter Noise
 
-When looking at the datasets there are some obvious levels of noise (in fact the amount of noise increased with each tile we examined). Filtering out these extraneous high and low (below the scene) points will help to reduce error and get us closer to the actual landscape. 
+When looking at the datasets there are some obvious levels of noise (in fact the amount of noise increased with each tile we examined). Filtering out these extraneous high and low (below the scene) points will help to reduce error and get us closer to the actual landscape. Note: this is only using distance to neighboring points/returns and no use of scan angle/intensity
 
-First let's try the **ivc (isolated voxel function)** from lidR to filter the noise by searching the returns for ones that are far away from neighbors.Let's try using a filter where we filter points that are no more than 10 returns within a resolution of 3m. We then filter the points by removing those that are classified as noise (the LASNOISE = 18).
+First let's try the **ivf (isolated voxel function)** from lidR to filter the noise by searching the returns for ones that are far away from neighbors.Let's try using a filter where we filter points that are no more than 12 returns within a resolution of 4m. We then filter the points by removing those that are classified as noise (the LASNOISE = 18).
 
-```{r Filter Noise }
+Overall, we we should check if the IVF being too strict by either counting how many points were removed. Commonly, < 1-2% is fine but anything greater than 5% should be looked at visually. We will also visually check the filters to see if they were appropriate and we may play with parameters to see which produces the best result.
 
+
+```{r Filter Noise - IVF 4m & 12 returns}
+# Father and Sons
+# Filter High Noise
+F_S_Camp_4_12_IVC <- classify_noise(F_S_Camp, ivf(res = 4, n = 12))
+
+unique(F_S_Camp_4_12_IVC@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+prior_filter_FSCamp <- npoints(F_S_Camp_4_12_IVC) # number of points before filter - 34099924
+
+F_S_Camp_412_Filter = filter_poi(F_S_Camp_4_12_IVC, Classification!= LASNOISE)
+after_filter_FSCamp <- npoints(F_S_Camp_412_Filter) # number of points before filter - 34099379 - looks like ~545 points were removed -> less than 1%
+lidRviewer::view(F_S_Camp_412_Filter) # visually inspect - looks pretty good with no obvious noise
+lidRviewer::view(F_S_Camp)  # if you need to compare
+
+# Filter low Noise
+
+F_S_Camp_NoiseFilter = filter_poi(F_S_Camp_412_Filter, Classification!= 7L)
+after_filter_FSCamp2 <- npoints(F_S_Camp_NoiseFilter) # number of points before filter - 34097223 
+lidRviewer::view(F_S_Camp_NoiseFilter) # visually inspect - looks pretty good with no obvious noise
+
+# Bear Gulch
+# Classify all returns 
+B_G_Camp_4_12_IVC <- classify_noise(B_G_Camp, ivf(res = 4, n = 12))
+
+unique(B_G_Camp_4_12_IVC@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 5 (high vegetation), 7 (low vegetation/low noise), and 18 (high noise). 
+prior_filter_BGCamp <- npoints(B_G_Camp_4_12_IVC) # number of points before filter 52091492
+
+B_G_Camp_412_Filter = filter_poi(B_G_Camp_4_12_IVC, Classification!= LASNOISE)
+after_filter_BGCamp <- npoints(B_G_Camp_412_Filter) # number of points before filter - 52091413 - looks like ~79 points were removed
+lidRviewer::view(B_G_Camp_412_Filter) # visually inspect - looks pretty good with no obvious noise
+lidRviewer::view(B_G_Camp) # if you need to compare
+
+# Filter low Noise
+
+B_G_Camp_NoiseFilter = filter_poi(B_G_Camp_412_Filter, Classification!= 7L)
+after_filter_BGCamp2 <- npoints(B_G_Camp_NoiseFilter) # number of points before filter -  52091279
+lidRviewer::view(B_G_Camp_NoiseFilter) # visually inspect - looks pretty good with no obvious noise
+
+
+# Thompson Flat
+T_F_Camp_4_12_IVC <- classify_noise(T_F_Camp, ivf(res = 4, n = 12))
+
+unique(T_F_Camp_4_12_IVC@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 5 (high vegetation), 7 (low vegetation/low noise), and 18 (high noise). 
+prior_filter_TFCamp <- npoints(T_F_Camp_4_12_IVC) # number of points before filter - 58340605
+
+T_F_Camp_412_Filter = filter_poi(T_F_Camp_4_12_IVC, Classification!= LASNOISE)
+after_filter_TFCamp <- npoints(T_F_Camp_412_Filter) # number of points before filter - 58339116 - looks like ~1489 points were removed -> less than 1%
+lidRviewer::view(T_F_Camp_412_Filter) # visually inspect - looks pretty good with no obvious noise
+lidRviewer::view(T_F_Camp) # if you need to compare
+
+# Filter low Noise
+
+T_F_Camp_NoiseFilter = filter_poi(T_F_Camp_412_Filter, Classification!= 7L)
+after_filter_TFCamp2 <- npoints(T_F_Camp_NoiseFilter) # number of points before filter -  
+lidRviewer::view(T_F_Camp_NoiseFilter) # visually inspect - looks pretty good with no obvious noise
+```
+
+
+### Ground Classification
+
+Working in mountainous forests, we will need to keep track of the parameters that we use. It is standard to use a cloth simulation filter which is available through the LiDAR function csf(). With the csf function, the LiDAR point cloud is inverted, and a simulation of a “rigid cloth” is draped over the inverted point cloud. The simulated cloth surface is then used to determine which points are associated with the ground.
+
+Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
+
+```{r Ground Classification}
+# Example Code
+Classified_las = classify_ground(ClassFilt_las, algorithm = csf())
+Classified_Full_LAS <- classify_ground(Filt_Full_las, algorithm = csf())
+
+# I get a warning saying points were originally classified. This is because NEON data - which is used for this - comes pre-classified; however, this is not always the case. 
+lidRviewer::view(Classified_las)
+
+lidRviewer::view(Classified_Full_LAS)
+
+# Press c to view classified points. Blue = ground
+DEM = rasterize_terrain(Classified_las, res = 1, algorithm = tin())
+Full_DEM <- rasterize_terrain(Classified_Full_LAS, res = 1, algorithm = )
+
+terra::plot(Full_DEM)
+terra::plot(DEM)
+
+# We can also make a map for slope and aspect
+slope = terrain(DEM, v='slope', unit = 'degrees')
+Full_slope <- terrain(Full_DEM, v ='slope', unit = 'degrees')
+asp = terrain(DEM, v='aspect', unit = 'degrees')
+Full_asp <- terrain(Full_DEM, v='aspect', unit = 'degrees')
+
+par(mfrow=c(1, 2))
+plot(slope)
+plot(asp)
+plot(Full_asp)
+plot(Full_slope)
+
+# Father and Sons
+
+
+# Bear Gulch
+
+
+# Thompson Flat
 ```
 
