@@ -11,7 +11,7 @@ I am using GitHub as a form of version control, so I will need to connect this d
 
 **This section is only needed for those modifying code**
 
-```{r Git Setup, include = FALSE, message = FALSE, warning = FALSE}
+```{r Git Setup, eval=FALSE, include = FALSE, message = FALSE, warning = FALSE}
 
 # We will need the usethis package so that we can connect our GitHub
 
@@ -68,7 +68,7 @@ LiDAR data was taken from [existing data from the Idaho LiDAR Consortium](https:
 
 ## Install Packages
 
-```{r Install Packages}
+```{r Install Packages, message=FALSE, warning=FALSE}
 # Install
 
 install.packages('lidR')
@@ -89,8 +89,9 @@ library(RCSF)
 
 ## Data Inspection
 
-Here I am selecting a few locations from each of the flight paths (e.g., Elko, South ID 2018 #12, etc.) around my study area to visually inspect to see if the point cloud even reflects reality. To do this, I am using a package called lidRviewer that works in tandem with the lidR package to allow you to visualize the point cloud of selected tiles. The view acts by opening a new window that you can interface with - while open R cannot run other sections of code. I will also use *Cloud Compare* - an open source software - as it provides a more detailed and user-controlled view. The reason we are doing this is that the flight reports indicate that multiple agencies were hired to perform the flights so I want to check point cloud density even though the accuracy was tested.
+Originally, I was using lidRviewer package in R to visually inspect the areas to see if they matched areas I had been to. However, given my storage, it wasn't possible to load the subset of tiles fully without overloading my computer or R's memory. To resolve this, I am doing a quick look over of the tiles in RStudio to quickly get a sense of whether they look natural and if they match up with the area they are intended to represent. After, the full tile is removed so I can inspect the next one. Then the full tiles are loaded into CloudCompare (version 2.13.2) for a better quality assessment to check the density patterns, canopy penetration, and ground realism. Once tiles are assess, we can configure the pipeline for filtering, classification, and generating forest metrics.
 
+**Note: code chunks are not set to run to avoid issues with memory. Rather code chunks should only display code for reproducibility.**
 Commands:
 
 -   Rotate with left mouse button
@@ -133,9 +134,9 @@ Since I am using the raw point cloud, we are likely to see withheld and syntheti
 
 ### Elko NW 2023
 
-First tile, I will look at is one from the Elko NW that shows Father and Sons Campground in the South Hills (11TQG320710)
+Based on the Elko flight reports they used 3 providers using 3 different LiDAR systems (see flight report for additional details) which had a max return per pulse of 7 to 8 (8 being the most common).
 
-```{r Elko NW 2023 Viewer Inspection}
+```{r Elko NW 2023 Viewer Inspection, eval=FALSE}
 ############### Father and Sons Camp (with logger) ################
 
 # Load the Tile containing Father and Sons Campground
@@ -143,6 +144,8 @@ F_S_Camp_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG3
 
 # Visually inspect
 lidRviewer::view(F_S_Camp_Elko)  
+
+# Imagery based on lidRviewer looks similar to what I have seen, very dense point cloud. Visually, I could only see 1 or two points that are a little above the tree line - probably a bird. 
 
 ################ Porcupine Springs (with loggers) ################
 
@@ -152,13 +155,17 @@ P_S_Camp_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG2
 # Visually inspect
 lidRviewer::view(P_S_Camp_Elko)  
 
+# lidRviewer shows 7 points that are way above the tree line. Points look very good and dense so I feel they look accurate to the ground.
+
 ################ Logger MLPF-107 ################
 
 # Load the Tile 
-Log_MLPF107_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_ID_SouthernID_2018_D19_11TQG350815.laz')
+Log_MLPF107_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG350815.laz')
 
 # Visually inspect
 lidRviewer::view(Log_MLPF107_Elko)  
+
+# lidRviewer shows many points above the tree line and below ground level but looks densely packed
 
 ################ Loggers LPO-034 and LPO-130 ################
 
@@ -168,13 +175,16 @@ Log_LPO034_LPO130_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D
 # Visually inspect
 lidRviewer::view(Log_LPO034_LPO130_Elko)  
 
+# lidRviewer had maybe ~5 points that seemed off, but it looked very good.
 ```
 
+Overall, lidRviewer seems to indicate the area looks visually valid. Looks like some areas may have some error points and the laser couldn't always get the entire way to the ground so there are holes in there.
 
 ### Southern ID 2018 # 12
 
+Southern ID 2018 #12 appears to have 4 different providers using 2 different systems of LiDAR. Notably the Galaxy PRIME system had a max of 7 - 8 returns while the VQ1560i had unlimited returns. 
 
-```{r Southern ID 2018 # 12 Viewer Inspection}
+```{r Southern ID 2018 # 12 Viewer Inspection, eval=FALSE}
 ################ Bear Gulch Campground ##############
 
 # Load the Tile containing Bear Gulch Campground
@@ -182,6 +192,8 @@ B_G_Camp_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG155770.laz
 
 # Visually inspect
 lidRviewer::view(B_G_Camp_12)
+
+# liRviewer shows some points above the trees. Also notice some empty space below the canopy where it looks like the laser couldn't quite make it to the ground
 
 ################ Diamondfield Jack Campground ##############
 
@@ -192,6 +204,8 @@ D_J_Camp_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG230725.laz
 
 lidRviewer::view(D_J_Camp_12)
 
+# lidRviewer shows many points above the treeline. Very dense location but can see some delineation of canopy but a bit harder to tell in this program.
+
 ################ Unique (known) ##############
 
 # Load the Tile 
@@ -199,6 +213,8 @@ known_loc_12 = readLAS('R:/Part21/Part21/USGS_LPC_ID_SouthernID_2018_D19_11TQG38
 
 # Visually inspect
 lidRviewer::view(known_loc_12)
+
+# lidRviewer shows many points above the treeline. Area has small densely packed stands by side of road but majority of land is open. It was hard to tell in this program about the areas with stands as controls are limited and you cannot chose which areas to zoom to which made it hard to assess canopy delineation.
 
 ################ Logger LPO-030 ##############
 
@@ -208,12 +224,15 @@ Log_LPO030_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG185710.l
 # Visually inspect
 lidRviewer::view(Log_LPO030_12)
 
+# lidRviewer shows many points that are above the treeline. This region is probably the densest for the area, but it looked good from the quick check.
 ```
 
 
 ### Southern ID 2018 # 14
 
-```{r Southern ID 2018 # 14 Viewer Inspection}
+Flight appears to have hired 3 providers with 3 different LiDAR systems with 2 having unlimited returns and 1 having 9 max returns. There were no areas in this section that I had surveyed. Instead, I opted to use 3 locations of varying densities to see how they look.
+
+```{r Southern ID 2018 # 14 Viewer Inspection, eval=FALSE}
 
 ################# ref 1 #############
 
@@ -224,6 +243,8 @@ ref1_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC
 # Visually inspect
 lidRviewer::view(ref1_14)
 
+# Denser portion of the study area appears to look good on the quick assessment, but there are points above the tree line that do not make sense.
+
 ################# ref 2 #############
 
 # Load the Tile 
@@ -233,6 +254,8 @@ ref2_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC
 # Visually inspect
 lidRviewer::view(ref2_14)
 
+# area is side of mountain with one slope being mostly low level veg and other forested. Still see points above tree line.
+
 ################# ref 3 #############
 
 # Load the Tile 
@@ -241,11 +264,15 @@ ref3_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC
 
 # Visually inspect
 lidRviewer::view(ref3_14)
+
+# least dense area --> pretty much all sagebrush and low trees. Some points above treeline
 ```
 
 ### Southern ID 2018 # 15
 
-```{r Southern ID 2018 # 15 Viewer Inspection}
+Flight had 2 providers with the same LiDAR system both with unlimited returns. There were no areas in this section that I had surveyed and this area takes up the smallest area. Chose areas around river which appeared to have trees that I could assess. 
+
+```{r Southern ID 2018 # 15 Viewer Inspection, eval = False}
 
 ################# ref 1 #############
 
@@ -256,6 +283,8 @@ ref1_15 = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG425815.laz'
 # Visually inspect
 lidRviewer::view(ref1_15)
 
+# area is kinda what I expect with lots of sagebrush since its lower elevation with denser taller trees in the riparian zone. Still have floating points.
+
 ################# ref 2 #############
 
 # Load the Tile 
@@ -264,12 +293,16 @@ ref2_15 = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG440830.laz'
 
 # Visually inspect
 lidRviewer::view(ref2_15)
+
+# area is sparse and appears to be mainly sagebrush and we still see floating points
 ```
 
 
 ### Southern ID 2018 # 17
 
-```{r Southern ID 2018 # 17 Viewer Inspection}
+Flight had 3 providers with 2 LiDAR systems of which the VQ1560i had unlimited returns while the Galaxy-PRIME had a max of 7.
+
+```{r Southern ID 2018 # 17 Viewer Inspection, eval=FALSE}
 
 ############### Thompson Flat Campground ################
 
@@ -279,6 +312,8 @@ T_F_Camp_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835890.laz')
 # Visually inspect
 lidRviewer::view(T_F_Camp_17)
 
+# Area looks how we expect but lots of floating points
+
 ############### Independence Lake Campground ###############
 
 # Load Tile
@@ -287,11 +322,15 @@ I_L_Camp_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM790770.laz')
 # visually inspect
 lidRviewer::view(I_L_Camp_17)
 
+# super dense area, trees look identifiable, lots of floaters
+
 ############### Logger LPO-060 #############
 Log_LPO060_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM745695.laz')
 
 # visually inspect
 lidRviewer::view(Log_LPO060_17)
+
+# super dense area, trees look good, floating points and also some underground?
 ```
 
 
