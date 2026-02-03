@@ -89,7 +89,7 @@ library(RCSF)
 
 ## Data Inspection
 
-Here I am selecting a few locations from each of the flight paths (e.g., Elko, South ID 201 #12, etc.) around my study area to visually inspect to see if the point cloud even reflects reality. To do this, I am using a package called lidRviewer that works in tandem with the lidR package to allow you to visualize the point cloud of selected tiles. The view acts by opening a new window that you can interface with - while open R cannot run other sections of code.
+Here I am selecting a few locations from each of the flight paths (e.g., Elko, South ID 2018 #12, etc.) around my study area to visually inspect to see if the point cloud even reflects reality. To do this, I am using a package called lidRviewer that works in tandem with the lidR package to allow you to visualize the point cloud of selected tiles. The view acts by opening a new window that you can interface with - while open R cannot run other sections of code. I will also use *Cloud Compare* - an open source software - as it provides a more detailed and user-controlled view. The reason we are doing this is that the flight reports indicate that multiple agencies were hired to perform the flights so I want to check point cloud density even though the accuracy was tested.
 
 Commands:
 
@@ -111,48 +111,7 @@ Commands:
 
 -   Keyboard l to enable/disable eyes-dome lightning
 
-### Elko NW 2023
-
-First tile, I will look at is one from the Elko NW that shows Father and Sons Campground in the South Hills (11TQG320710)
-
-```{r Elko NW 2023 Viewer Inspection}
-############### Father and Sons Camp (with logger) ################
-
-# Load the Tile containing Father and Sons Campground
-F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG320710.laz')
-
-# Visually inspect
-lidRviewer::view(F_S_Camp)  
-
-################ Porcupine Springs (with loggers) ################
-
-# Load the Tile 
-F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG260710.laz')
-
-# Visually inspect
-lidRviewer::view(F_S_Camp)  
-
-################ Logger MLPF-107 ################
-
-# Load the Tile 
-F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_ID_SouthernID_2018_D19_11TQG350815.laz')
-
-# Visually inspect
-lidRviewer::view(F_S_Camp)  
-
-################ Loggers LPO-034 and LPO-130 ################
-
-# Load the Tile 
-F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG305605.laz')
-
-# Visually inspect
-lidRviewer::view(F_S_Camp)  
-
-```
-
-I get a warning that there are 2343136 points that are withheld, so we will remove these. We also get a warning that 234136 are synthetic points so we will keep those.
-
-*Note: reasoning for withholding 'withheld' points:*
+Since I am using the raw point cloud, we are likely to see withheld and synthetic classified points. *Note: reasoning for withholding 'withheld' points:*
 
 -   *they are points the data provider recommends you ignore*
 
@@ -172,7 +131,45 @@ I get a warning that there are 2343136 points that are withheld, so we will remo
 
 -   *densified surfaces in workflows*
 
-Shows a lot of white points (unclassified points - white) so we will likely need to classify. I also saw one or two points that appeared to be an error - point above tree line.
+### Elko NW 2023
+
+First tile, I will look at is one from the Elko NW that shows Father and Sons Campground in the South Hills (11TQG320710)
+
+```{r Elko NW 2023 Viewer Inspection}
+############### Father and Sons Camp (with logger) ################
+
+# Load the Tile containing Father and Sons Campground
+F_S_Camp_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG320710.laz')
+
+# Visually inspect
+lidRviewer::view(F_S_Camp_Elko)  
+
+################ Porcupine Springs (with loggers) ################
+
+# Load the Tile 
+P_S_Camp_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG260710.laz')
+
+# Visually inspect
+lidRviewer::view(P_S_Camp_Elko)  
+
+################ Logger MLPF-107 ################
+
+# Load the Tile 
+Log_MLPF107_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_ID_SouthernID_2018_D19_11TQG350815.laz')
+
+# Visually inspect
+lidRviewer::view(Log_MLPF107_Elko)  
+
+################ Loggers LPO-034 and LPO-130 ################
+
+# Load the Tile 
+Log_LPO034_LPO130_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG305605.laz')
+
+# Visually inspect
+lidRviewer::view(Log_LPO034_LPO130_Elko)  
+
+```
+
 
 ### Southern ID 2018 # 12
 
@@ -181,39 +178,38 @@ Shows a lot of white points (unclassified points - white) so we will likely need
 ################ Bear Gulch Campground ##############
 
 # Load the Tile containing Bear Gulch Campground
-B_G_Camp = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG155770.laz')
+B_G_Camp_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG155770.laz')
 
 # Visually inspect
-lidRviewer::view(B_G_Camp)
+lidRviewer::view(B_G_Camp_12)
 
 ################ Diamondfield Jack Campground ##############
 
 # Load the Tile 
-B_G_Camp = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG230725.laz')
+D_J_Camp_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG230725.laz')
 
 # Visually inspect
 
-lidRviewer::view(B_G_Camp)
+lidRviewer::view(D_J_Camp_12)
 
 ################ Unique (known) ##############
 
 # Load the Tile 
-B_G_Camp = readLAS('R:/Part21/Part21/USGS_LPC_ID_SouthernID_2018_D19_11TQG380725.laz')
+known_loc_12 = readLAS('R:/Part21/Part21/USGS_LPC_ID_SouthernID_2018_D19_11TQG380725.laz')
 
 # Visually inspect
-lidRviewer::view(B_G_Camp)
+lidRviewer::view(known_loc_12)
 
 ################ Logger LPO-030 ##############
 
 # Load the Tile 
-B_G_Camp = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG185710.laz')
+Log_LPO030_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG185710.laz')
 
 # Visually inspect
-lidRviewer::view(B_G_Camp)
+lidRviewer::view(Log_LPO030_12)
 
 ```
 
-I get a warning that there are 3720655 points that are withheld, so we will remove these. We also get a warning that 3720655 are synthetic points so we will keep those. I see lots of error points and unclassified points.
 
 ### Southern ID 2018 # 14
 
@@ -223,28 +219,28 @@ I get a warning that there are 3720655 points that are withheld, so we will remo
 
 # Load the Tile 
 
-T_F_Camp = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM820755.laz')
+ref1_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM820755.laz')
 
 # Visually inspect
-lidRviewer::view(T_F_Camp)
+lidRviewer::view(ref1_14)
 
 ################# ref 2 #############
 
 # Load the Tile 
 
-T_F_Camp = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835740.laz')
+ref2_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835740.laz')
 
 # Visually inspect
-lidRviewer::view(T_F_Camp)
+lidRviewer::view(ref2_14)
 
 ################# ref 3 #############
 
 # Load the Tile 
 
-T_F_Camp = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM850725.laz')
+ref3_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM850725.laz')
 
 # Visually inspect
-lidRviewer::view(T_F_Camp)
+lidRviewer::view(ref3_14)
 ```
 
 ### Southern ID 2018 # 15
@@ -255,19 +251,19 @@ lidRviewer::view(T_F_Camp)
 
 # Load the Tile 
 
-T_F_Camp = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG425815.laz')
+ref1_15 = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG425815.laz')
 
 # Visually inspect
-lidRviewer::view(T_F_Camp)
+lidRviewer::view(ref1_15)
 
 ################# ref 2 #############
 
 # Load the Tile 
 
-T_F_Camp = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG440830.laz')
+ref2_15 = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG440830.laz')
 
 # Visually inspect
-lidRviewer::view(T_F_Camp)
+lidRviewer::view(ref2_15)
 ```
 
 
@@ -278,27 +274,26 @@ lidRviewer::view(T_F_Camp)
 ############### Thompson Flat Campground ################
 
 # Load the Tile 
-T_F_Camp = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835890.laz')
+T_F_Camp_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835890.laz')
 
 # Visually inspect
-lidRviewer::view(T_F_Camp)
+lidRviewer::view(T_F_Camp_17)
 
 ############### Independence Lake Campground ###############
 
 # Load Tile
-T_F_Camp = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM790770.laz')
+I_L_Camp_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM790770.laz')
 
 # visually inspect
-lidRviewer::view(T_F_Camp)
+lidRviewer::view(I_L_Camp_17)
 
 ############### Logger LPO-060 #############
-T_F_Camp = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM745695.laz')
+Log_LPO060_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM745695.laz')
 
 # visually inspect
-lidRviewer::view(T_F_Camp)
+lidRviewer::view(Log_LPO060_17)
 ```
 
-I get a warning that there are 318539 points that are withheld, so we will remove these. We also get a warning that 318539 are synthetic points so we will keep those. The worst one. So many error points - maybe there was smoke when they flew the plane.
 
 Based on this information, we should reclassify these tiles. We should begin by working with these tiles to create a general pipeline for classification (which we can then use the **batch** function to do to all tiles).
 
