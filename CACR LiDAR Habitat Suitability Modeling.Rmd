@@ -44,13 +44,25 @@ The combination of being a permanent resident restricted to high elevation envir
 
 # Data
 
-LiDAR data was taken from [existing data from the Idaho LiDAR Consortium](https://www.idaholidar.org/existing-lidar-data/) and utilizing 5 different projects. Further detail regarding flight information will be added below.
+LiDAR data was taken from [existing data from the Idaho LiDAR Consortium](https://www.idaholidar.org/existing-lidar-data/) and utilizing 5 different projects.
 
-1.  Southern ID 2018 #12 - South Hills (**Note: Southern ID 2018 #12 is stored as Part 21 and Part 22**)
-2.  Southern ID 2018 #15 - South Hills (**Note: Southern ID 2018 #15 is stored as 07_Cassia**)
-3.  Southern ID 2018 #17 - E. South Hills and W. Albions
-4.  Elko NW (2021 imagery) - South Hills - 196,727 ACRES
-5.  Southern ID 2018 \# - E. Albions
+1.  Elko NW (2021 imagery) - South Hills - 196,727 ACRES
+2.  Southern ID 2018 #12 - South Hills (**Note: Southern ID 2018 #12 is stored as Part 21 and Part 22**)
+3.  Southern ID 2018 #14 - E. Albions
+4.  Southern ID 2018 #15 - South Hills (**Note: Southern ID 2018 #15 is stored as 07_Cassia**)
+5.  Southern ID 2018 #17 - E. South Hills and W. Albions (**Note: Southern ID 2018 #17 is stored as LAZ**)
+
+## LiDAR Flight Information
+
+### Elko NW
+
+### Southern ID 2018 \# 12
+
+### Southern ID 2018 \# 14
+
+### Southern ID 2018 \# 15
+
+### Southern ID 2018 \# 17
 
 # Code
 
@@ -77,19 +89,65 @@ library(RCSF)
 
 ## Data Inspection
 
-Here I am selecting a few locations from around my study area to visually inspect to see if the point cloud even reflects reality. To do this, I am using a package called lidRviewer that works in tandem with the lidR package to allow you to visualize the point cloud of selected tiles. The view acts by opening a new window that you can interface with - while open R cannot run other sections of code.
+Here I am selecting a few locations from each of the flight paths (e.g., Elko, South ID 201 #12, etc.) around my study area to visually inspect to see if the point cloud even reflects reality. To do this, I am using a package called lidRviewer that works in tandem with the lidR package to allow you to visualize the point cloud of selected tiles. The view acts by opening a new window that you can interface with - while open R cannot run other sections of code.
 
-Commands: - Rotate with left mouse button - Zoom with mouse wheel - Pan with right mouse button - Keyboard r or g or b to color with RGB - Keyboard z to color with Z - Keyboard i to color with Intensity - Keyboard c to color with Classification - Keyboard + or - to change the point size - Keyboard l to enable/disable eyes-dome lightning
+Commands:
+
+-   Rotate with left mouse button
+
+-   Zoom with mouse wheel
+
+-   Pan with right mouse button
+
+-   Keyboard r or g or b to color with RGB
+
+-   Keyboard z to color with Z
+
+-   Keyboard i to color with Intensity
+
+-   Keyboard c to color with Classification
+
+-   Keyboard + or - to change the point size
+
+-   Keyboard l to enable/disable eyes-dome lightning
+
+### Elko NW 2023
 
 First tile, I will look at is one from the Elko NW that shows Father and Sons Campground in the South Hills (11TQG320710)
 
-```{r Father and Sons Campground Viewer Inspection}
+```{r Elko NW 2023 Viewer Inspection}
+############### Father and Sons Camp (with logger) ################
 
 # Load the Tile containing Father and Sons Campground
 F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG320710.laz')
 
 # Visually inspect
 lidRviewer::view(F_S_Camp)  
+
+################ Porcupine Springs (with loggers) ################
+
+# Load the Tile 
+F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG260710.laz')
+
+# Visually inspect
+lidRviewer::view(F_S_Camp)  
+
+################ Logger MLPF-107 ################
+
+# Load the Tile 
+F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_ID_SouthernID_2018_D19_11TQG350815.laz')
+
+# Visually inspect
+lidRviewer::view(F_S_Camp)  
+
+################ Loggers LPO-034 and LPO-130 ################
+
+# Load the Tile 
+F_S_Camp = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG305605.laz')
+
+# Visually inspect
+lidRviewer::view(F_S_Camp)  
+
 ```
 
 I get a warning that there are 2343136 points that are withheld, so we will remove these. We also get a warning that 234136 are synthetic points so we will keep those.
@@ -114,27 +172,129 @@ I get a warning that there are 2343136 points that are withheld, so we will remo
 
 -   *densified surfaces in workflows*
 
-Shows a lot of white points (unclassified points - white) so we will likely need to classify. I also saw one or two points that appearred to be an error - point above tree line.
+Shows a lot of white points (unclassified points - white) so we will likely need to classify. I also saw one or two points that appeared to be an error - point above tree line.
 
-Next, I will look at Bear Gulch Campground in the South Hills (11TQG1155770) from the Southern Idaho 2018_12.
+### Southern ID 2018 # 12
 
-```{r Bear Gulch Campground Viewer Inspection}
-# Load the Tile containing Father and Sons Campground
+
+```{r Southern ID 2018 # 12 Viewer Inspection}
+################ Bear Gulch Campground ##############
+
+# Load the Tile containing Bear Gulch Campground
 B_G_Camp = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG155770.laz')
 
 # Visually inspect
 lidRviewer::view(B_G_Camp)
+
+################ Diamondfield Jack Campground ##############
+
+# Load the Tile 
+B_G_Camp = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG230725.laz')
+
+# Visually inspect
+
+lidRviewer::view(B_G_Camp)
+
+################ Unique (known) ##############
+
+# Load the Tile 
+B_G_Camp = readLAS('R:/Part21/Part21/USGS_LPC_ID_SouthernID_2018_D19_11TQG380725.laz')
+
+# Visually inspect
+lidRviewer::view(B_G_Camp)
+
+################ Logger LPO-030 ##############
+
+# Load the Tile 
+B_G_Camp = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG185710.laz')
+
+# Visually inspect
+lidRviewer::view(B_G_Camp)
+
 ```
 
-I get a warning that there are 3720655  points that are withheld, so we will remove these. We also get a warning that 3720655  are synthetic points so we will keep those. I see lots of error points and unclassified points.
+I get a warning that there are 3720655 points that are withheld, so we will remove these. We also get a warning that 3720655 are synthetic points so we will keep those. I see lots of error points and unclassified points.
 
-Last, I will look at Thompson Flat Campground in the Albions (12TTM835890) from the Southern Idaho 2018_17.
+### Southern ID 2018 # 14
 
-```{r Thompson Flat Campground Viewer Inspection}
-# Load the Tile containing Father and Sons Campground
+```{r Southern ID 2018 # 14 Viewer Inspection}
+
+################# ref 1 #############
+
+# Load the Tile 
+
+T_F_Camp = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM820755.laz')
+
+# Visually inspect
+lidRviewer::view(T_F_Camp)
+
+################# ref 2 #############
+
+# Load the Tile 
+
+T_F_Camp = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835740.laz')
+
+# Visually inspect
+lidRviewer::view(T_F_Camp)
+
+################# ref 3 #############
+
+# Load the Tile 
+
+T_F_Camp = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM850725.laz')
+
+# Visually inspect
+lidRviewer::view(T_F_Camp)
+```
+
+### Southern ID 2018 # 15
+
+```{r Southern ID 2018 # 15 Viewer Inspection}
+
+################# ref 1 #############
+
+# Load the Tile 
+
+T_F_Camp = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG425815.laz')
+
+# Visually inspect
+lidRviewer::view(T_F_Camp)
+
+################# ref 2 #############
+
+# Load the Tile 
+
+T_F_Camp = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG440830.laz')
+
+# Visually inspect
+lidRviewer::view(T_F_Camp)
+```
+
+
+### Southern ID 2018 # 17
+
+```{r Southern ID 2018 # 17 Viewer Inspection}
+
+############### Thompson Flat Campground ################
+
+# Load the Tile 
 T_F_Camp = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835890.laz')
 
 # Visually inspect
+lidRviewer::view(T_F_Camp)
+
+############### Independence Lake Campground ###############
+
+# Load Tile
+T_F_Camp = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM790770.laz')
+
+# visually inspect
+lidRviewer::view(T_F_Camp)
+
+############### Logger LPO-060 #############
+T_F_Camp = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM745695.laz')
+
+# visually inspect
 lidRviewer::view(T_F_Camp)
 ```
 
@@ -224,7 +384,7 @@ CSF is controlled by:
 
 -   much much sagging is allowed --\> slope smoothing
 
-We will also be trying the PMF (progressive morphological filter) which creates a small window and fins the low points where it then gradually increases the window size and allow higher thresholds as terrain scale increases.
+We will also be trying the PMF (progressive morphological filter) which creates a small window and fins the low points where it then gradually increases the window size and allow higher thresholds as terrain scale increases.Then, we will compare the two. I expect that the CSF may perform better compared to the PMF due to the mountainous terrain.
 
 PMF is controlled by:
 
@@ -236,7 +396,7 @@ PMF is controlled by:
 
 Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
 
-```{r Ground Classification}
+```{r}
 # Example Code
 Classified_las = classify_ground(ClassFilt_las, algorithm = csf())
 Classified_Full_LAS <- classify_ground(Filt_Full_las, algorithm = csf())
@@ -264,8 +424,17 @@ plot(slope)
 plot(asp)
 plot(Full_asp)
 plot(Full_slope)
+```
+
+```{r Ground Classification}
 
 # Father and Sons
+##################################################### Cloth Simulation Filter ##########################################
+# We will start with the default setting and we can make adjustments as we go
+FSCamp_Grnd_CSF <- classify_ground(FSCamp_Filter, algorithm = csf())
+lidRviewer::view(FSCamp_Grnd_CSF)
+# Default setting appear pretty good, but it looks like it may be listing low vegetation 
+lidRviewer::view(F_S_Camp)  # if you need to compare
 
 
 # Bear Gulch
