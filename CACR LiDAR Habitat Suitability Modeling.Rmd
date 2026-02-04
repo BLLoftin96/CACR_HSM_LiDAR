@@ -91,7 +91,7 @@ library(RCSF)
 
 Originally, I was using lidRviewer package in R to visually inspect the areas to see if they matched areas I had been to. However, given my storage, it wasn't possible to load the subset of tiles fully without overloading my computer or R's memory. To resolve this, I am doing a quick look over of the tiles in RStudio to quickly get a sense of whether they look natural and if they match up with the area they are intended to represent. After, the full tile is removed so I can inspect the next one. Then the full tiles are loaded into CloudCompare (version 2.13.2) for a better quality assessment to check the density patterns, canopy penetration, and ground realism. Once tiles are assess, we can configure the pipeline for filtering, classification, and generating forest metrics.
 
-**Note: code chunks are not set to run to avoid issues with memory. Rather code chunks should only display code for reproducibility.**
+**Note: code chunks are not set to run to avoid issues with memory. Rather code chunks should only display code for reproducibility. Additionally, screenshots of CloudCompare areas were saved to compare densities and for reproducibility.**
 Commands:
 
 -   Rotate with left mouse button
@@ -145,7 +145,7 @@ F_S_Camp_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG3
 # Visually inspect
 lidRviewer::view(F_S_Camp_Elko)  
 
-# Imagery based on lidRviewer looks similar to what I have seen, very dense point cloud. Visually, I could only see 1 or two points that are a little above the tree line - probably a bird. 
+# Imagery based on lidRviewer looks similar to what I have seen, very dense point cloud. Visually, I could only see 1 or two points that are a little above the tree line - probably a bird. CloudCompare offered better clarity appears very similar to what I have seen. Noticed some gaps in the ground level and based on the number of returns it appears that the highest is indeed 8.
 
 ################ Porcupine Springs (with loggers) ################
 
@@ -155,7 +155,7 @@ P_S_Camp_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG2
 # Visually inspect
 lidRviewer::view(P_S_Camp_Elko)  
 
-# lidRviewer shows 7 points that are way above the tree line. Points look very good and dense so I feel they look accurate to the ground.
+# lidRviewer shows 7 points that are way above the tree line. Points look very good and dense so I feel they look accurate to the ground. CloudCompare view looked very good and despite density I could see distinct separation of trees.
 
 ################ Logger MLPF-107 ################
 
@@ -175,14 +175,14 @@ Log_LPO034_LPO130_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D
 # Visually inspect
 lidRviewer::view(Log_LPO034_LPO130_Elko)  
 
-# lidRviewer had maybe ~5 points that seemed off, but it looked very good.
+# lidRviewer had maybe ~5 points that seemed off, but it looked very good. CloudCompare looked excellent and looked very similar to what we saw in the field.
 ```
 
 Overall, lidRviewer seems to indicate the area looks visually valid. Looks like some areas may have some error points and the laser couldn't always get the entire way to the ground so there are holes in there.
 
 ### Southern ID 2018 # 12
 
-Southern ID 2018 #12 appears to have 4 different providers using 2 different systems of LiDAR. Notably the Galaxy PRIME system had a max of 7 - 8 returns while the VQ1560i had unlimited returns. 
+Southern ID 2018 #12 appears to have 4 different providers using 2 different systems of LiDAR. Notably the Galaxy PRIME system had a max of 7 - 8 returns while the VQ1560i had unlimited returns. CloudCompare view was excellent with the number of returns being similar to that noted in the flight plan (~7 or 8).
 
 ```{r Southern ID 2018 # 12 Viewer Inspection, eval=FALSE}
 ################ Bear Gulch Campground ##############
@@ -193,7 +193,7 @@ B_G_Camp_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG155770.laz
 # Visually inspect
 lidRviewer::view(B_G_Camp_12)
 
-# liRviewer shows some points above the trees. Also notice some empty space below the canopy where it looks like the laser couldn't quite make it to the ground
+# liRviewer shows some points above the trees.CloudCompare was easier to check with trees being easier to see.
 
 ################ Diamondfield Jack Campground ##############
 
@@ -204,7 +204,7 @@ D_J_Camp_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG230725.laz
 
 lidRviewer::view(D_J_Camp_12)
 
-# lidRviewer shows many points above the treeline. Very dense location but can see some delineation of canopy but a bit harder to tell in this program.
+# lidRviewer shows many points above the treeline. Very dense location but can see some delineation of canopy but a bit harder to tell in this program. CloudCompare view was much easier to read. A bit harder to see the canopy delineation for the intensely packed LP
 
 ################ Unique (known) ##############
 
@@ -214,7 +214,7 @@ known_loc_12 = readLAS('R:/Part21/Part21/USGS_LPC_ID_SouthernID_2018_D19_11TQG38
 # Visually inspect
 lidRviewer::view(known_loc_12)
 
-# lidRviewer shows many points above the treeline. Area has small densely packed stands by side of road but majority of land is open. It was hard to tell in this program about the areas with stands as controls are limited and you cannot chose which areas to zoom to which made it hard to assess canopy delineation.
+# lidRviewer shows many points above the treeline. Area has small densely packed stands by side of road but majority of land is open. It was hard to tell in this program about the areas with stands as controls are limited and you cannot chose which areas to zoom to which made it hard to assess canopy delineation. CloudCompare was a bit easier to see with trees looking distinguishable.
 
 ################ Logger LPO-030 ##############
 
@@ -224,7 +224,7 @@ Log_LPO030_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG185710.l
 # Visually inspect
 lidRviewer::view(Log_LPO030_12)
 
-# lidRviewer shows many points that are above the treeline. This region is probably the densest for the area, but it looked good from the quick check.
+# lidRviewer shows many points that are above the treeline. This region is probably the densest for the area, but it looked good from the quick check. CloudCompare appears to be what I expect. There is some very very densely packed trees here which may be hard to delineate.
 ```
 
 
@@ -333,6 +333,7 @@ lidRviewer::view(Log_LPO060_17)
 # super dense area, trees look good, floating points and also some underground?
 ```
 
+In general, we do see some points that float above the tree line as well as some points below ground (though to a much lesser degree). Notably, densely packed areas may be harder to delineate based on LiDAR used and I notice some empty space below the canopy where it looks like the laser couldn't quite make it to the ground.
 
 Based on this information, we should reclassify these tiles. We should begin by working with these tiles to create a general pipeline for classification (which we can then use the **batch** function to do to all tiles).
 
