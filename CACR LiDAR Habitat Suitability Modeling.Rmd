@@ -243,7 +243,7 @@ ref1_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC
 # Visually inspect
 lidRviewer::view(ref1_14)
 
-# Denser portion of the study area appears to look good on the quick assessment, but there are points above the tree line that do not make sense.
+# Denser portion of the study area appears to look good on the quick assessment, but there are points above the tree line that do not make sense.CloudCompare shows up to 4 or 5 returns but the density and the overall delineation looks good.
 
 ################# ref 2 #############
 
@@ -254,7 +254,7 @@ ref2_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC
 # Visually inspect
 lidRviewer::view(ref2_14)
 
-# area is side of mountain with one slope being mostly low level veg and other forested. Still see points above tree line.
+# area is side of mountain with one slope being mostly low level veg and other forested. Still see points above tree line. CloudCompare shows up to 4 or 5 returns but the density and the overall delineation looks good.
 
 ################# ref 3 #############
 
