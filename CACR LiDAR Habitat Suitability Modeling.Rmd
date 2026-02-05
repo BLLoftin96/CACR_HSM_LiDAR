@@ -265,7 +265,7 @@ ref3_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC
 # Visually inspect
 lidRviewer::view(ref3_14)
 
-# least dense area --> pretty much all sagebrush and low trees. Some points above treeline
+# least dense area --> pretty much all sagebrush and low trees. Some points above treeline. CC shows 4 returns and clearly shows the open area.
 ```
 
 ### Southern ID 2018 # 15
