@@ -270,7 +270,7 @@ lidRviewer::view(ref3_14)
 
 ### Southern ID 2018 # 15
 
-Flight had 2 providers with the same LiDAR system both with unlimited returns. There were no areas in this section that I had surveyed and this area takes up the smallest area. Chose areas around river which appeared to have trees that I could assess. 
+Flight had 2 providers with the same LiDAR system both with unlimited returns. There were no areas in this section that I had surveyed and this area takes up the smallest area. Chose areas around river which appeared to have trees that I could assess. Max number of returns shows only 3 for ref1 and ref2, but area appears to have low vegetation so this may be the max number of returns needed. 
 
 ```{r Southern ID 2018 # 15 Viewer Inspection, eval = False}
 
@@ -283,7 +283,7 @@ ref1_15 = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG425815.laz'
 # Visually inspect
 lidRviewer::view(ref1_15)
 
-# area is kinda what I expect with lots of sagebrush since its lower elevation with denser taller trees in the riparian zone. Still have floating points.
+# area is kinda what I expect with lots of sagebrush since its lower elevation with denser taller trees in the riparian zone. Still have floating points. CC shows points both above the treeline and below the ground. Appears to be an area of very low veg. Riparian area looks to have some gaps under the veg but this may be due to the shear slope that is in the area.
 
 ################# ref 2 #############
 
@@ -294,13 +294,13 @@ ref2_15 = readLAS('R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG440830.laz'
 # Visually inspect
 lidRviewer::view(ref2_15)
 
-# area is sparse and appears to be mainly sagebrush and we still see floating points
+# area is sparse and appears to be mainly sagebrush and we still see floating points. CC shows similar view with vegetation looking to be predominantly sage brush.
 ```
 
 
 ### Southern ID 2018 # 17
 
-Flight had 3 providers with 2 LiDAR systems of which the VQ1560i had unlimited returns while the Galaxy-PRIME had a max of 7.
+Flight had 3 providers with 2 LiDAR systems of which the VQ1560i had unlimited returns while the Galaxy-PRIME had a max of 7. CC shows max return of 6.
 
 ```{r Southern ID 2018 # 17 Viewer Inspection, eval=FALSE}
 
@@ -312,7 +312,7 @@ T_F_Camp_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM835890.laz')
 # Visually inspect
 lidRviewer::view(T_F_Camp_17)
 
-# Area looks how we expect but lots of floating points
+# Area looks how we expect but lots of floating points. CC shows 6 max returns. Vegetation looks similar to the area on the ground with open patches and characteristic Douglas-Fir. Area has dense patches that may be hard to characterize under the canopy layer. 
 
 ############### Independence Lake Campground ###############
 
@@ -322,7 +322,7 @@ I_L_Camp_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM790770.laz')
 # visually inspect
 lidRviewer::view(I_L_Camp_17)
 
-# super dense area, trees look identifiable, lots of floaters
+# super dense area, trees look identifiable, lots of floaters. CC shows max of 6 returns with very dense vegetation. Canopy layer may be hard to pierce but canopy trees do look like they may be delineated.
 
 ############### Logger LPO-060 #############
 Log_LPO060_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM745695.laz')
@@ -330,7 +330,7 @@ Log_LPO060_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM745695.laz'
 # visually inspect
 lidRviewer::view(Log_LPO060_17)
 
-# super dense area, trees look good, floating points and also some underground?
+# super dense area, trees look good, floating points and also some underground? CC shows max of 6 returns with very dense vegetation. Canopy layer may be hard to pierce but canopy trees do look like they may be delineated.
 ```
 
 In general, we do see some points that float above the tree line as well as some points below ground (though to a much lesser degree). Notably, densely packed areas may be harder to delineate based on LiDAR used and I notice some empty space below the canopy where it looks like the laser couldn't quite make it to the ground.
