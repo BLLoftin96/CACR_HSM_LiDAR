@@ -170,7 +170,7 @@ lidRviewer::view(Log_MLPF107_Elko)
 ################ Loggers LPO-034 and LPO-130 ################
 
 # Load the Tile 
-Log_LPO034_LPO130_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG305605.laz')
+Log_LPO034_LPO130_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG305605.laz')# Visually inspect
 
 # Visually inspect
 lidRviewer::view(Log_LPO034_LPO130_Elko)  
@@ -347,21 +347,30 @@ Here our goal is to create a pipeline by generating code using these 3 tiles. We
 
 3.  Second cleanup of noise - if needed
 
+4.  Generate a Normalized Canopy Height Model 
+
 ### Filter Noise
 
 When looking at the datasets there are some obvious levels of noise (in fact the amount of noise increased with each tile we examined). Filtering out these extraneous high and low (below the scene) points will help to reduce error and get us closer to the actual landscape. Note: this is only using distance to neighboring points/returns and no use of scan angle/intensity
 
-First let's try the **ivf (isolated voxel function)** from lidR to filter the noise by searching the returns for ones that are far away from neighbors.Let's try using a filter where we filter points that are no more than 12 returns within a resolution of 4m. We then filter the points by removing those that are classified as noise (the LASNOISE = 18).
+First let's try the **ivf (isolated voxel function)** from lidR to filter the noise by searching the returns for ones that are far away from neighbors.Let's try using a filter where we filter points that are no more than 12 returns within a resolution of 4m. We then filter the points by removing those that are classified as noise (the LASNOISE = 7 and 18).
 
 Overall, we we should check if the IVF being too strict by either counting how many points were removed. Commonly, \< 1-2% is fine but anything greater than 5% should be looked at visually. We will also visually check the filters to see if they were appropriate and we may play with parameters to see which produces the best result.
 
-Additionally, we will be filtering the withheld flagged points since they are not recommended for use.
+Additionally, we will be filtering the withheld and synthetic flagged points since they are not recommended for use as they could create bias in our data.
 
-```{r Filter Noise - IVF 4m & 12 returns}
-# Father and Sons
+#### Elko
 
-# Filter Withheld
-FSCamp_Filter <- filter_poi(F_S_Camp, !Withheld_flag) # Start: 31756788
+```{r Elko Filter Noise - IVF 4m & 12 returns}
+############# Father and Sons Camp ###########
+# Father and Sons starts at 34099924
+
+# Filter Withheld and Synthetic
+FSCamp_Filter <- filter_poi(F_S_Camp_Elko, !Withheld_flag & !Synthetic_flag) # 31756788
+
+# Verify these are removed
+sum(FSCamp_Filter$Withheld_flag) # 0
+sum(FSCamp_Filter$Synthetic_flag) # 0
 
 # Filter  Noise
 FSCamp_Filter <- classify_noise(FSCamp_Filter, ivf(res = 4, n = 12)) # classifies
@@ -371,39 +380,235 @@ unique(FSCamp_Filter@data[["Classification"]]) # shows the number of unique clas
 FSCamp_Filter = filter_poi(FSCamp_Filter, !Classification %in% c(7L, 18L)) # End: 31756299
  
 lidRviewer::view(FSCamp_Filter) # visually inspect - looks pretty good with no obvious noise
-lidRviewer::view(F_S_Camp)  # if you need to compare
 
+########## Porcupine Springs Camp ##############
 
-# Bear Gulch
-# Filter Withheld
-BGCamp_Filter <- filter_poi(B_G_Camp, !Withheld_flag) # 48370837
+# Porcupine Springs starts at 38649037
 
-# Classify all returns 
-BGCamp_Filter <- classify_noise(BGCamp_Filter, ivf(res = 4, n = 12))
+# Filter Withheld and Synthetic
+PSCamp_Filter <- filter_poi(P_S_Camp_Elko, !Withheld_flag & !Synthetic_flag) # 35429522
 
-unique(BGCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 5 (high vegetation), 7 (low vegetation/low noise), and 18 (high noise). 
-# in the code above we see that there are no 18 or 7 classified points so I doubt the filtering will do much
+# Verify these are removed
+sum(PSCamp_Filter$Withheld_flag) # 0
+sum(PSCamp_Filter$Synthetic_flag) # 0
 
-BGCamp_Filter = filter_poi(BGCamp_Filter, !Classification %in% c(7L, 18L)) # End with 48370837
+# Filter  Noise
+PSCamp_Filter <- classify_noise(PSCamp_Filter, ivf(res = 4, n = 12)) # classifies
 
-lidRviewer::view(BGCamp_Filter) # visually inspect - looks pretty good with no obvious noise
-lidRviewer::view(B_G_Camp) # if you need to compare
+unique(PSCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
 
+PSCamp_Filter = filter_poi(PSCamp_Filter, !Classification %in% c(7L, 18L)) # End: 35429454
+ 
+lidRviewer::view(PSCamp_Filter) # visually inspect - looks pretty good with no obvious noise
 
-# Thompson Flat
-# Filter Withheld
-TFCamp_Filter <- filter_poi(T_F_Camp, !Withheld_flag) # start:
+# Tile was randomly selected to check in CC
+writeLAS(PSCamp_Filter, "PSCamp_Filtered_QA.laz") # Looked to have no obvious noise that I could see
 
-# Classify
-TFCamp_Filter <- classify_noise(TFCamp_Filter, ivf(res = 4, n = 12)) # Start: 58022066
+########### Log MLPF-107 #############
 
-unique(TFCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 5 (high vegetation), 7 (low vegetation/low noise), and 18 (high noise). 
+# Log_MLPF107_Elko start at 31837872
 
-# Again no 7 or 18 class
-TFCamp_Filter = filter_poi(TFCamp_Filter, !Classification %in% c(7L, 18L)) # End: 58022066
+# Filter Withheld and Synthetic
+LogMLPF107_Filter <- filter_poi(Log_MLPF107_Elko, !Withheld_flag & !Synthetic_flag) # 29545121
 
-lidRviewer::view(TFCamp_Filter) # visually inspect - looks pretty good with no obvious noise
-lidRviewer::view(T_F_Camp) # if you need to compare
+# Verify these are removed
+sum(LogMLPF107_Filter$Withheld_flag) # 0
+sum(LogMLPF107_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+LogMLPF107_Filter <- classify_noise(LogMLPF107_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(LogMLPF107_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+LogMLPF107_Filter = filter_poi(LogMLPF107_Filter, !Classification %in% c(7L, 18L)) # End: 29544781
+ 
+lidRviewer::view(LogMLPF107_Filter) # visually inspect - want to check in CC --> looks good just hard to see in lidRviewer
+writeLAS(LogMLPF107_Filter, "LogMLPF107_Filter_QA.laz")
+
+############## Log LPO-034 and LPO-130 ##############
+
+# Log_LPO034_LPO130_Elko start at 31943058
+
+# Filter Withheld and Synthetic
+LogLPOs_Filter <- filter_poi(Log_LPO034_LPO130_Elko, !Withheld_flag & !Synthetic_flag) # 29852402
+
+# Verify these are removed
+sum(LogLPOs_Filter$Withheld_flag) # 0
+sum(LogLPOs_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+LogLPOs_Filter <- classify_noise(LogLPOs_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(LogLPOs_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+LogLPOs_Filter = filter_poi(LogLPOs_Filter, !Classification %in% c(7L, 18L)) # End: 29852402
+ 
+lidRviewer::view(LogLPOs_Filter) # visually inspect 
+```
+
+#### Southern ID 2018 #12
+
+```{r Southern ID 2018 #12 Filter Noise - IVF 4m & 12 returns}
+############### Bear Gulch Camp ##############
+# Bear Gulch Camp start at 52091492
+# Filter Withheld and Synthetic
+BGCamp_Filter <- filter_poi(B_G_Camp_12, !Withheld_flag & !Synthetic_flag) # 48331113
+
+# Verify these are removed
+sum(BGCamp_Filter$Withheld_flag) # 0
+sum(BGCamp_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+BGCamp_Filter <- classify_noise(BGCamp_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(BGCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+BGCamp_Filter = filter_poi(BGCamp_Filter, !Classification %in% c(7L, 18L)) # End: 48331113
+ 
+lidRviewer::view(BGCamp_Filter) # visually inspect 
+
+########## Diamondfield Jack Camp ############
+
+# Diamondfield Jack Camp start at 70900844
+# Filter Withheld and Synthetic
+DJCamp_Filter <- filter_poi(D_J_Camp_12, !Withheld_flag & !Synthetic_flag) # 66041374
+
+# Verify these are removed
+sum(DJCamp_Filter$Withheld_flag) # 0
+sum(DJCamp_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+DJCamp_Filter <- classify_noise(DJCamp_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(DJCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+DJCamp_Filter = filter_poi(DJCamp_Filter, !Classification %in% c(7L, 18L)) # End: 66041373
+ 
+lidRviewer::view(DJCamp_Filter) # visually inspect --> ski lift is marked same as veg!!!! 
+writeLAS(DJCamp_Filter, "DJCamp_Filter_QA.laz")
+
+############## Known Location ##############
+
+# Known Location start at 51937347
+
+# Filter Withheld and Synthetic
+KnownLoc_Filter <- filter_poi(known_loc_12, !Withheld_flag & !Synthetic_flag) # 47334121
+
+# Verify these are removed
+sum(KnownLoc_Filter$Withheld_flag) # 0
+sum(KnownLoc_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+KnownLoc_Filter <- classify_noise(KnownLoc_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(KnownLoc_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+KnownLoc_Filter = filter_poi(KnownLoc_Filter, !Classification %in% c(7L, 18L)) # End: 47334121
+ 
+lidRviewer::view(KnownLoc_Filter) # visually inspect 
+
+############ Logger LPO-030 #############
+
+# Logger LPO-030 start at 87373600
+
+# Filter Withheld and Synthetic
+Log_LPO030_Filter <- filter_poi(Log_LPO030_12, !Withheld_flag & !Synthetic_flag) # 79880560
+
+# Verify these are removed
+sum(Log_LPO030_Filter$Withheld_flag) # 0
+sum(Log_LPO030_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+Log_LPO030_Filter <- classify_noise(Log_LPO030_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(Log_LPO030_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+Log_LPO030_Filter = filter_poi(Log_LPO030_Filter, !Classification %in% c(7L, 18L)) # End: 47334121
+ 
+lidRviewer::view(Log_LPO030_Filter) # visually inspect 
+
+```
+
+#### Southern ID 2018 #14
+
+```{r Southern ID 2018 #14 Filter Noise - IVF 4m & 12 returns}
+############### Bear Gulch Camp ##############
+# Bear Gulch Camp start at 52091492
+# Filter Withheld and Synthetic
+BGCamp_Filter <- filter_poi(B_G_Camp_12, !Withheld_flag & !Synthetic_flag) # 48331113
+
+# Verify these are removed
+sum(BGCamp_Filter$Withheld_flag) # 0
+sum(BGCamp_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+BGCamp_Filter <- classify_noise(BGCamp_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(BGCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+BGCamp_Filter = filter_poi(BGCamp_Filter, !Classification %in% c(7L, 18L)) # End: 48331113
+ 
+lidRviewer::view(BGCamp_Filter) # visually inspect 
+
+########## Diamondfield Jack Camp ############
+
+# Diamondfield Jack Camp start at 70900844
+# Filter Withheld and Synthetic
+DJCamp_Filter <- filter_poi(D_J_Camp_12, !Withheld_flag & !Synthetic_flag) # 66041374
+
+# Verify these are removed
+sum(DJCamp_Filter$Withheld_flag) # 0
+sum(DJCamp_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+DJCamp_Filter <- classify_noise(DJCamp_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(DJCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+DJCamp_Filter = filter_poi(DJCamp_Filter, !Classification %in% c(7L, 18L)) # End: 66041373
+ 
+lidRviewer::view(DJCamp_Filter) # visually inspect --> ski lift is marked same as veg!!!! 
+writeLAS(DJCamp_Filter, "DJCamp_Filter_QA.laz")
+
+############## Known Location ##############
+
+# Known Location start at 51937347
+
+# Filter Withheld and Synthetic
+KnownLoc_Filter <- filter_poi(known_loc_12, !Withheld_flag & !Synthetic_flag) # 47334121
+
+# Verify these are removed
+sum(KnownLoc_Filter$Withheld_flag) # 0
+sum(KnownLoc_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+KnownLoc_Filter <- classify_noise(KnownLoc_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(KnownLoc_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+KnownLoc_Filter = filter_poi(KnownLoc_Filter, !Classification %in% c(7L, 18L)) # End: 47334121
+ 
+lidRviewer::view(KnownLoc_Filter) # visually inspect 
+
+############ Logger LPO-030 #############
+
+# Logger LPO-030 start at 87373600
+
+# Filter Withheld and Synthetic
+Log_LPO030_Filter <- filter_poi(Log_LPO030_12, !Withheld_flag & !Synthetic_flag) # 79880560
+
+# Verify these are removed
+sum(Log_LPO030_Filter$Withheld_flag) # 0
+sum(Log_LPO030_Filter$Synthetic_flag) # 0
+
+# Filter Noise
+Log_LPO030_Filter <- classify_noise(Log_LPO030_Filter, ivf(res = 4, n = 12)) # classifies
+
+unique(Log_LPO030_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+
+Log_LPO030_Filter = filter_poi(Log_LPO030_Filter, !Classification %in% c(7L, 18L)) # End: 47334121
+ 
+lidRviewer::view(Log_LPO030_Filter) # visually inspect 
 
 ```
 
