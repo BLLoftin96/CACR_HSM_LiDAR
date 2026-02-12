@@ -91,8 +91,7 @@ library(RCSF)
 
 Originally, I was using lidRviewer package in R to visually inspect the areas to see if they matched areas I had been to. However, given my storage, it wasn't possible to load the subset of tiles fully without overloading my computer or R's memory. To resolve this, I am doing a quick look over of the tiles in RStudio to quickly get a sense of whether they look natural and if they match up with the area they are intended to represent. After, the full tile is removed so I can inspect the next one. Then the full tiles are loaded into CloudCompare (version 2.13.2) for a better quality assessment to check the density patterns, canopy penetration, and ground realism. Once tiles are assess, we can configure the pipeline for filtering, classification, and generating forest metrics.
 
-**Note: code chunks are not set to run to avoid issues with memory. Rather code chunks should only display code for reproducibility. Additionally, screenshots of CloudCompare areas were saved to compare densities and for reproducibility.**
-Commands:
+**Note: code chunks are not set to run to avoid issues with memory. Rather code chunks should only display code for reproducibility. Additionally, screenshots of CloudCompare areas were saved to compare densities and for reproducibility.** Commands:
 
 -   Rotate with left mouse button
 
@@ -137,6 +136,7 @@ Since I am using the raw point cloud, we are likely to see withheld and syntheti
 Based on the Elko flight reports they used 3 providers using 3 different LiDAR systems (see flight report for additional details) which had a max return per pulse of 7 to 8 (8 being the most common).
 
 ```{r Elko NW 2023 Viewer Inspection, eval=FALSE}
+
 ############### Father and Sons Camp (with logger) ################
 
 # Load the Tile containing Father and Sons Campground
@@ -180,9 +180,9 @@ lidRviewer::view(Log_LPO034_LPO130_Elko)
 
 Overall, lidRviewer seems to indicate the area looks visually valid. Looks like some areas may have some error points and the laser couldn't always get the entire way to the ground so there are holes in there.
 
-### Southern ID 2018 # 12
+### Southern ID 2018 \# 12
 
-Southern ID 2018 #12 appears to have 4 different providers using 2 different systems of LiDAR. Notably the Galaxy PRIME system had a max of 7 - 8 returns while the VQ1560i had unlimited returns. CloudCompare view was excellent with the number of returns being similar to that noted in the flight plan (~7 or 8).
+Southern ID 2018 #12 appears to have 4 different providers using 2 different systems of LiDAR. Notably the Galaxy PRIME system had a max of 7 - 8 returns while the VQ1560i had unlimited returns. CloudCompare view was excellent with the number of returns being similar to that noted in the flight plan (\~7 or 8).
 
 ```{r Southern ID 2018 # 12 Viewer Inspection, eval=FALSE}
 ################ Bear Gulch Campground ##############
@@ -227,8 +227,7 @@ lidRviewer::view(Log_LPO030_12)
 # lidRviewer shows many points that are above the treeline. This region is probably the densest for the area, but it looked good from the quick check. CloudCompare appears to be what I expect. There is some very very densely packed trees here which may be hard to delineate.
 ```
 
-
-### Southern ID 2018 # 14
+### Southern ID 2018 \# 14
 
 Flight appears to have hired 3 providers with 3 different LiDAR systems with 2 having unlimited returns and 1 having 9 max returns. There were no areas in this section that I had surveyed. Instead, I opted to use 3 locations of varying densities to see how they look.
 
@@ -268,9 +267,9 @@ lidRviewer::view(ref3_14)
 # least dense area --> pretty much all sagebrush and low trees. Some points above treeline. CC shows 4 returns and clearly shows the open area.
 ```
 
-### Southern ID 2018 # 15
+### Southern ID 2018 \# 15
 
-Flight had 2 providers with the same LiDAR system both with unlimited returns. There were no areas in this section that I had surveyed and this area takes up the smallest area. Chose areas around river which appeared to have trees that I could assess. Max number of returns shows only 3 for ref1 and ref2, but area appears to have low vegetation so this may be the max number of returns needed. 
+Flight had 2 providers with the same LiDAR system both with unlimited returns. There were no areas in this section that I had surveyed and this area takes up the smallest area. Chose areas around river which appeared to have trees that I could assess. Max number of returns shows only 3 for ref1 and ref2, but area appears to have low vegetation so this may be the max number of returns needed.
 
 ```{r Southern ID 2018 # 15 Viewer Inspection, eval = False}
 
@@ -297,8 +296,7 @@ lidRviewer::view(ref2_15)
 # area is sparse and appears to be mainly sagebrush and we still see floating points. CC shows similar view with vegetation looking to be predominantly sage brush.
 ```
 
-
-### Southern ID 2018 # 17
+### Southern ID 2018 \# 17
 
 Flight had 3 providers with 2 LiDAR systems of which the VQ1560i had unlimited returns while the Galaxy-PRIME had a max of 7. CC shows max return of 6.
 
@@ -347,7 +345,102 @@ Here our goal is to create a pipeline by generating code using these 3 tiles. We
 
 3.  Second cleanup of noise - if needed
 
-4.  Generate a Normalized Canopy Height Model 
+4.  Generate a Normalized Canopy Height Model
+
+
+### Create Catalog for Pipeline
+
+**To do this step and save memory, we are going to create a small catalog of our earlier tiles to represent different densities, slopes, and regions in order to test whether the pipeline fails to accommodate any of these things. We will use the following 8 tiles:**
+
+-   *Logger LPO-034 & Logger LPO-130 - Elko*
+
+-   *Porcupine Springs Camp - Elko*
+
+-   *Diamondfield Jack Camp - Southern ID 2018 #12*
+
+-   *Known location - Southern ID 2018 #12*
+
+-   *Reference 3 - Southern ID 2018 #14*
+
+-   *Reference 2 - Southern ID 2018 #15*
+
+-   *Independence Lake - Southern ID 2018 #17*
+
+-   *Logger LPO-060 - Southern ID #17*
+
+```{r Create Pipeline Catalog}
+
+# Create a path to the files 
+
+pipeline_files <- c(
+  "R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG260710.laz",
+  "R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG305605.laz",
+  "R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG230725.laz",
+  "R:/Part21/Part21/USGS_LPC_ID_SouthernID_2018_D19_11TQG380725.laz",
+  "R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM850725.laz",
+  "R:/07_Cassia/USGS_LPC_ID_SouthernID_2018_D19_11TQG440830.laz",
+  "R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM790770.laz",
+  "R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM745695.laz"
+  ) # Order: Porcupine Springs Camp, Logger LPO-034 & Logger LPO-130, Diamondfield Jack Camp, Known location (SID 2018 - 12), SID 2018 - 14 reference 3, SID 2018 - 15 reference 2, Independence Lake Camp, and Logger LPO-060 
+  
+# Normalize the Paths
+
+pipeline_files <- normalizePath(pipeline_files, winslash = "/", mustWork = TRUE)
+
+# Create Catalog
+ctg_test <- readLAScatalog(pipeline_files)
+
+# Check Catalog
+ctg_test
+
+# Make a bounding box in the center of each tile for efficiency
+
+df <- ctg_test@data
+names(df)
+
+box_size <- 500
+half <- box_size / 2
+
+qa_boxes <- data.frame(
+  name = paste0("tile", seq_len(nrow(df))),   # tile1..tile8
+  xmin = (df$Min.X + df$Max.X)/2 - half,
+  xmax = (df$Min.X + df$Max.X)/2 + half,
+  ymin = (df$Min.Y + df$Max.Y)/2 - half,
+  ymax = (df$Min.Y + df$Max.Y)/2 + half
+)
+
+
+qa_boxes
+
+# Create a bounding box to intersect tile
+qa_polys <- st_sfc(
+  lapply(seq_len(nrow(qa_boxes)), function(i) {
+    st_polygon(list(matrix(c(
+      qa_boxes$xmin[i], qa_boxes$ymin[i],
+      qa_boxes$xmax[i], qa_boxes$ymin[i],
+      qa_boxes$xmax[i], qa_boxes$ymax[i],
+      qa_boxes$xmin[i], qa_boxes$ymax[i],
+      qa_boxes$xmin[i], qa_boxes$ymin[i]
+    ), ncol = 2, byrow = TRUE)))
+  }),
+  crs = st_crs(ctg_test)
+)
+
+qa_polys <- st_sf(name = qa_boxes$name, geometry = qa_polys)
+
+# Intersect Tile to BB
+ctg_qa <- catalog_intersect(ctg_test, qa_polys)
+ctg_qa
+
+sf::st_crs(ctg_test)
+sf::st_crs(qa_polys)
+
+
+plot(ctg_test)
+plot(sf::st_geometry(qa_polys), add = TRUE, border = "red", lwd = 2)
+
+```
+
 
 ### Filter Noise
 
@@ -359,258 +452,84 @@ Overall, we we should check if the IVF being too strict by either counting how m
 
 Additionally, we will be filtering the withheld and synthetic flagged points since they are not recommended for use as they could create bias in our data.
 
-#### Elko
 
-```{r Elko Filter Noise - IVF 4m & 12 returns}
-############# Father and Sons Camp ###########
-# Father and Sons starts at 34099924
+Here we will use the catalog to save space in R and RAM. 
 
-# Filter Withheld and Synthetic
-FSCamp_Filter <- filter_poi(F_S_Camp_Elko, !Withheld_flag & !Synthetic_flag) # 31756788
+```{r Generate Filter Pipeline - Center Boundary Box 500m}
+# Set the number of threads to reduce RAM spikes
+lidR::set_lidr_threads(1)
 
-# Verify these are removed
-sum(FSCamp_Filter$Withheld_flag) # 0
-sum(FSCamp_Filter$Synthetic_flag) # 0
+# Output folder
+out_dir <- "Output_Files/Filter_Chunks/"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
-# Filter  Noise
-FSCamp_Filter <- classify_noise(FSCamp_Filter, ivf(res = 4, n = 12)) # classifies
+# Sanity checks
+stopifnot(length(pipeline_files) == nrow(qa_boxes))
 
-unique(FSCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+for (k in seq_along(pipeline_files)) {
 
-FSCamp_Filter = filter_poi(FSCamp_Filter, !Classification %in% c(7L, 18L)) # End: 31756299
- 
-lidRviewer::view(FSCamp_Filter) # visually inspect - looks pretty good with no obvious noise
+  f <- pipeline_files[k]
+  base <- tools::file_path_sans_ext(basename(f))
+  out_file <- file.path(out_dir, paste0(base, "_center500_filtered.laz"))
 
-########## Porcupine Springs Camp ##############
+  message("\n[", k, "/", length(pipeline_files), "] ", base)
 
-# Porcupine Springs starts at 38649037
+  # Skip if already done
+  if (file.exists(out_file)) {
+    message("  -> already exists, skipping: ", out_file)
+    next
+  }
 
-# Filter Withheld and Synthetic
-PSCamp_Filter <- filter_poi(P_S_Camp_Elko, !Withheld_flag & !Synthetic_flag) # 35429522
+  # Read full tile
+  las <- readLAS(f)
+  if (is.empty(las)) {
+    message("  -> tile is empty, skipping")
+    rm(las); gc()
+    next
+  }
 
-# Verify these are removed
-sum(PSCamp_Filter$Withheld_flag) # 0
-sum(PSCamp_Filter$Synthetic_flag) # 0
+  # Clip 500x500 center box for THIS tile
+  clip <- clip_rectangle(
+    las,
+    xleft   = qa_boxes$xmin[k],
+    ybottom = qa_boxes$ymin[k],
+    xright  = qa_boxes$xmax[k],
+    ytop    = qa_boxes$ymax[k]
+  )
 
-# Filter  Noise
-PSCamp_Filter <- classify_noise(PSCamp_Filter, ivf(res = 4, n = 12)) # classifies
+  # Free full tile ASAP
+  rm(las); gc()
 
-unique(PSCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
+  if (is.empty(clip)) {
+    message("  -> clip is empty, skipping")
+    rm(clip); gc()
+    next
+  }
 
-PSCamp_Filter = filter_poi(PSCamp_Filter, !Classification %in% c(7L, 18L)) # End: 35429454
- 
-lidRviewer::view(PSCamp_Filter) # visually inspect - looks pretty good with no obvious noise
+  # Filter pipeline on the clip
+  clip <- filter_poi(clip, !Withheld_flag & !Synthetic_flag)
+  clip <- classify_noise(clip, ivf(res = 4, n = 12))
+  clip <- filter_poi(clip, !Classification %in% c(7L, 18L))
 
-# Tile was randomly selected to check in CC
-writeLAS(PSCamp_Filter, "PSCamp_Filtered_QA.laz") # Looked to have no obvious noise that I could see
+  if (is.empty(clip)) {
+    message("  -> clip became empty after filtering, skipping")
+    rm(clip); gc()
+    next
+  }
 
-########### Log MLPF-107 #############
+  # Write output
+  writeLAS(clip, out_file)
+  message("  -> wrote: ", out_file, " (n=", npoints(clip), ")")
 
-# Log_MLPF107_Elko start at 31837872
+  # Cleanup
+  rm(clip); gc()
+}
 
-# Filter Withheld and Synthetic
-LogMLPF107_Filter <- filter_poi(Log_MLPF107_Elko, !Withheld_flag & !Synthetic_flag) # 29545121
-
-# Verify these are removed
-sum(LogMLPF107_Filter$Withheld_flag) # 0
-sum(LogMLPF107_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-LogMLPF107_Filter <- classify_noise(LogMLPF107_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(LogMLPF107_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-LogMLPF107_Filter = filter_poi(LogMLPF107_Filter, !Classification %in% c(7L, 18L)) # End: 29544781
- 
-lidRviewer::view(LogMLPF107_Filter) # visually inspect - want to check in CC --> looks good just hard to see in lidRviewer
-writeLAS(LogMLPF107_Filter, "LogMLPF107_Filter_QA.laz")
-
-############## Log LPO-034 and LPO-130 ##############
-
-# Log_LPO034_LPO130_Elko start at 31943058
-
-# Filter Withheld and Synthetic
-LogLPOs_Filter <- filter_poi(Log_LPO034_LPO130_Elko, !Withheld_flag & !Synthetic_flag) # 29852402
-
-# Verify these are removed
-sum(LogLPOs_Filter$Withheld_flag) # 0
-sum(LogLPOs_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-LogLPOs_Filter <- classify_noise(LogLPOs_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(LogLPOs_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-LogLPOs_Filter = filter_poi(LogLPOs_Filter, !Classification %in% c(7L, 18L)) # End: 29852402
- 
-lidRviewer::view(LogLPOs_Filter) # visually inspect 
-```
-
-#### Southern ID 2018 #12
-
-```{r Southern ID 2018 #12 Filter Noise - IVF 4m & 12 returns}
-############### Bear Gulch Camp ##############
-# Bear Gulch Camp start at 52091492
-# Filter Withheld and Synthetic
-BGCamp_Filter <- filter_poi(B_G_Camp_12, !Withheld_flag & !Synthetic_flag) # 48331113
-
-# Verify these are removed
-sum(BGCamp_Filter$Withheld_flag) # 0
-sum(BGCamp_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-BGCamp_Filter <- classify_noise(BGCamp_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(BGCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-BGCamp_Filter = filter_poi(BGCamp_Filter, !Classification %in% c(7L, 18L)) # End: 48331113
- 
-lidRviewer::view(BGCamp_Filter) # visually inspect 
-
-########## Diamondfield Jack Camp ############
-
-# Diamondfield Jack Camp start at 70900844
-# Filter Withheld and Synthetic
-DJCamp_Filter <- filter_poi(D_J_Camp_12, !Withheld_flag & !Synthetic_flag) # 66041374
-
-# Verify these are removed
-sum(DJCamp_Filter$Withheld_flag) # 0
-sum(DJCamp_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-DJCamp_Filter <- classify_noise(DJCamp_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(DJCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-DJCamp_Filter = filter_poi(DJCamp_Filter, !Classification %in% c(7L, 18L)) # End: 66041373
- 
-lidRviewer::view(DJCamp_Filter) # visually inspect --> ski lift is marked same as veg!!!! 
-writeLAS(DJCamp_Filter, "DJCamp_Filter_QA.laz")
-
-############## Known Location ##############
-
-# Known Location start at 51937347
-
-# Filter Withheld and Synthetic
-KnownLoc_Filter <- filter_poi(known_loc_12, !Withheld_flag & !Synthetic_flag) # 47334121
-
-# Verify these are removed
-sum(KnownLoc_Filter$Withheld_flag) # 0
-sum(KnownLoc_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-KnownLoc_Filter <- classify_noise(KnownLoc_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(KnownLoc_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-KnownLoc_Filter = filter_poi(KnownLoc_Filter, !Classification %in% c(7L, 18L)) # End: 47334121
- 
-lidRviewer::view(KnownLoc_Filter) # visually inspect 
-
-############ Logger LPO-030 #############
-
-# Logger LPO-030 start at 87373600
-
-# Filter Withheld and Synthetic
-Log_LPO030_Filter <- filter_poi(Log_LPO030_12, !Withheld_flag & !Synthetic_flag) # 79880560
-
-# Verify these are removed
-sum(Log_LPO030_Filter$Withheld_flag) # 0
-sum(Log_LPO030_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-Log_LPO030_Filter <- classify_noise(Log_LPO030_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(Log_LPO030_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-Log_LPO030_Filter = filter_poi(Log_LPO030_Filter, !Classification %in% c(7L, 18L)) # End: 47334121
- 
-lidRviewer::view(Log_LPO030_Filter) # visually inspect 
 
 ```
 
-#### Southern ID 2018 #14
+We will then check the chunks in CloudCompare to ensure there isn't any canopy shearing or noise left behind. 
 
-```{r Southern ID 2018 #14 Filter Noise - IVF 4m & 12 returns}
-############### Bear Gulch Camp ##############
-# Bear Gulch Camp start at 52091492
-# Filter Withheld and Synthetic
-BGCamp_Filter <- filter_poi(B_G_Camp_12, !Withheld_flag & !Synthetic_flag) # 48331113
-
-# Verify these are removed
-sum(BGCamp_Filter$Withheld_flag) # 0
-sum(BGCamp_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-BGCamp_Filter <- classify_noise(BGCamp_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(BGCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-BGCamp_Filter = filter_poi(BGCamp_Filter, !Classification %in% c(7L, 18L)) # End: 48331113
- 
-lidRviewer::view(BGCamp_Filter) # visually inspect 
-
-########## Diamondfield Jack Camp ############
-
-# Diamondfield Jack Camp start at 70900844
-# Filter Withheld and Synthetic
-DJCamp_Filter <- filter_poi(D_J_Camp_12, !Withheld_flag & !Synthetic_flag) # 66041374
-
-# Verify these are removed
-sum(DJCamp_Filter$Withheld_flag) # 0
-sum(DJCamp_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-DJCamp_Filter <- classify_noise(DJCamp_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(DJCamp_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-DJCamp_Filter = filter_poi(DJCamp_Filter, !Classification %in% c(7L, 18L)) # End: 66041373
- 
-lidRviewer::view(DJCamp_Filter) # visually inspect --> ski lift is marked same as veg!!!! 
-writeLAS(DJCamp_Filter, "DJCamp_Filter_QA.laz")
-
-############## Known Location ##############
-
-# Known Location start at 51937347
-
-# Filter Withheld and Synthetic
-KnownLoc_Filter <- filter_poi(known_loc_12, !Withheld_flag & !Synthetic_flag) # 47334121
-
-# Verify these are removed
-sum(KnownLoc_Filter$Withheld_flag) # 0
-sum(KnownLoc_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-KnownLoc_Filter <- classify_noise(KnownLoc_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(KnownLoc_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-KnownLoc_Filter = filter_poi(KnownLoc_Filter, !Classification %in% c(7L, 18L)) # End: 47334121
- 
-lidRviewer::view(KnownLoc_Filter) # visually inspect 
-
-############ Logger LPO-030 #############
-
-# Logger LPO-030 start at 87373600
-
-# Filter Withheld and Synthetic
-Log_LPO030_Filter <- filter_poi(Log_LPO030_12, !Withheld_flag & !Synthetic_flag) # 79880560
-
-# Verify these are removed
-sum(Log_LPO030_Filter$Withheld_flag) # 0
-sum(Log_LPO030_Filter$Synthetic_flag) # 0
-
-# Filter Noise
-Log_LPO030_Filter <- classify_noise(Log_LPO030_Filter, ivf(res = 4, n = 12)) # classifies
-
-unique(Log_LPO030_Filter@data[["Classification"]]) # shows the number of unique classifications: 1 (unclassified), 2 (ground), 3 (low vegetation), 4 (medium vegetation), 5 (high vegetation), 7 (low noise), and 18 (high noise). 
-
-Log_LPO030_Filter = filter_poi(Log_LPO030_Filter, !Classification %in% c(7L, 18L)) # End: 47334121
- 
-lidRviewer::view(Log_LPO030_Filter) # visually inspect 
-
-```
 
 ### Ground Classification
 
@@ -636,35 +555,7 @@ PMF is controlled by:
 
 Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
 
-```{r}
-# Example Code
-Classified_las = classify_ground(ClassFilt_las, algorithm = csf())
-Classified_Full_LAS <- classify_ground(Filt_Full_las, algorithm = csf())
-
-# I get a warning saying points were originally classified. This is because NEON data - which is used for this - comes pre-classified; however, this is not always the case. 
-lidRviewer::view(Classified_las)
-
-lidRviewer::view(Classified_Full_LAS)
-
-# Press c to view classified points. Blue = ground
-DEM = rasterize_terrain(Classified_las, res = 1, algorithm = tin())
-Full_DEM <- rasterize_terrain(Classified_Full_LAS, res = 1, algorithm = )
-
-terra::plot(Full_DEM)
-terra::plot(DEM)
-
-# We can also make a map for slope and aspect
-slope = terrain(DEM, v='slope', unit = 'degrees')
-Full_slope <- terrain(Full_DEM, v ='slope', unit = 'degrees')
-asp = terrain(DEM, v='aspect', unit = 'degrees')
-Full_asp <- terrain(Full_DEM, v='aspect', unit = 'degrees')
-
-par(mfrow=c(1, 2))
-plot(slope)
-plot(asp)
-plot(Full_asp)
-plot(Full_slope)
-```
+We will want to have a chunk and buffer window of ~150 and ~30, respectively for this and future parts of the pipeline.
 
 ```{r Ground Classification}
 
@@ -681,4 +572,154 @@ lidRviewer::view(F_S_Camp)  # if you need to compare
 
 
 # Thompson Flat
+```
+
+
+## Check Pipeline on Full Tile
+
+We will also want to inspect the full tile as well in CloudCompare
+
+```{r Check Full Tiles}
+
+# Load the Elko Tile 
+P_S_Camp_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG260710.laz')
+
+# Filter
+P_S_Camp_Elko_Filter <- filter_poi(P_S_Camp_Elko, !Withheld_flag & !Synthetic_flag)
+P_S_Camp_Elko_Filter <- classify_noise(P_S_Camp_Elko_Filter, ivf(res = 4, n = 12))
+P_S_Camp_Elko_Filter <- filter_poi(P_S_Camp_Elko_Filter, !Classification %in% c(7L, 18L))
+
+# Save
+writeLAS(P_S_Camp_Elko_Filter, "Output_Files/Filtered_Tile/PSCamp_Elko_Filter.laz")
+
+# Load Diamondfield Jack 
+D_J_Camp_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG230725.laz')
+
+# Filter
+D_J_Camp_12_Filter <- filter_poi(D_J_Camp_12, !Withheld_flag & !Synthetic_flag)
+D_J_Camp_12_Filter <- classify_noise(D_J_Camp_12_Filter, ivf(res = 4, n = 12))
+D_J_Camp_12_Filter <- filter_poi(D_J_Camp_12_Filter, !Classification %in% c(7L, 18L))
+
+# Save
+writeLAS(P_S_Camp_Elko_Filter, "Output_Files/Filtered_Tile/DJCamp_12_Filter.laz")
+
+# Load Reference 3 #14 
+ref3_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM850725.laz')
+
+# Filter
+ref3_14_Filter <- filter_poi(ref3_14, !Withheld_flag & !Synthetic_flag)
+ref3_14_Filter <- classify_noise(ref3_14_Filter, ivf(res = 4, n = 12))
+ref3_14_Filter <- filter_poi(ref3_14_Filter, !Classification %in% c(7L, 18L))
+
+# Save
+writeLAS(P_S_Camp_Elko_Filter, "Output_Files/Filtered_Tile/ref3_14_Filter.laz")
+
+# Load Independence Lake Camp 
+I_L_Camp_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM790770.laz')
+
+# Filter
+I_L_Camp_17_Filter <- filter_poi(I_L_Camp_17, !Withheld_flag & !Synthetic_flag)
+I_L_Camp_17_Filter <- classify_noise(I_L_Camp_17_Filter, ivf(res = 4, n = 12))
+I_L_Camp_17_Filter <- filter_poi(I_L_Camp_17_Filter, !Classification %in% c(7L, 18L))
+
+# Save
+writeLAS(I_L_Camp_17_Filter, "Output_Files/Filtered_Tile/ILCamp_17_Filter.laz")
+```
+
+
+```{r Pipe-no bounding box}
+lidR::set_lidr_threads(1)
+
+# Set the chunk and buffer window 
+opt_chunk_size(ctg_test) <- 150
+opt_chunk_buffer(ctg_test) <- 0
+
+# Output folder
+out_dir <- "Output_Files/Filter_Chunks/"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# This will build output names from the source file name
+opt_output_files(ctg_test) <- file.path(out_dir, "{XLEFT}_{YBOTTOM}_{XRIGHT}_{YTOP}_filtered")
+
+# Create a function to apply filter
+QA_filter <- function(chunk, ...) {
+
+  las <- readLAS(chunk)
+
+  # If the chunk has no points, return NULL (required by catalog_apply)
+  if (is.empty(las)) return(NULL)
+
+  # 1) Remove withheld + synthetic
+  las <- filter_poi(las, !Withheld_flag & !Synthetic_flag)
+
+  # 2) Classify noise using IVF
+  las <- classify_noise(las, ivf(res = 4, n = 12))
+
+  # 3) Remove noise classes (7 and 18)
+  las <- filter_poi(las, !Classification %in% c(7L, 18L))
+
+  # If filtering removed everything, return NULL
+  if (is.empty(las)) return(NULL)
+
+  las
+}
+
+
+# Run once: this will write filtered chunks to disk
+catalog_apply(ctg_test, QA_filter)
+
+
+
+############## OR ###########
+
+# pick a few tiles (e.g., 1 per flight)
+qa_files <- c(
+  pipeline_files[1],
+  pipeline_files[3],
+  pipeline_files[5],
+  pipeline_files[7],
+  pipeline_files[8]
+)
+
+out_dir <- "Output_Files/Filter_Tiles/"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+for (f in qa_files) {
+
+  message("Processing: ", f)
+
+  # Read ONE tile
+  las <- readLAS(f)
+  if (is.empty(las)) {
+    message("  -> empty, skipping")
+    next
+  }
+
+  # Filter: withheld + synthetic
+  las <- filter_poi(las, !Withheld_flag & !Synthetic_flag)
+
+  # Noise classify + remove 7/18
+  las <- classify_noise(las, ivf(res = 4, n = 12))
+  las <- filter_poi(las, !Classification %in% c(7L, 18L))
+
+  if (is.empty(las)) {
+    message("  -> empty after filtering, skipping")
+    rm(las); gc()
+    next
+  }
+
+  # Output name
+  base <- tools::file_path_sans_ext(basename(f))
+  out_file <- file.path(out_dir, paste0(base, "_filtered.laz"))
+
+  # Skip if already written
+  if (!file.exists(out_file)) {
+    writeLAS(las, out_file)
+    message("  -> wrote: ", out_file)
+  } else {
+    message("  -> already exists, skipping")
+  }
+
+  rm(las); gc()
+}
 ```
