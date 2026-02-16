@@ -598,17 +598,17 @@ Once points are classified, you know which points are associated with the ground
 
 # I had to close R so I need to find the filtered 500m centered ROI clips (so I do not need to re-run the filter)
 
-roi_dir   <- "Output_Files/Filter_Chunks/"
+filt_500_dir   <- "Output_Files/Filter_Chunks/"
 
 # Grab only the ROI outputs that end with '_center500_filtered.laz'
-roi_files <- list.files(roi_dir, pattern = "_center500_filtered\\.laz$", full.names = TRUE)
+filt_500_files <- list.files(filt_500_dir, pattern = "_center500_filtered\\.laz$", full.names = TRUE)
 
 # Quick sanity check: how many files are there?
 
-length(roi_files)
-roi_files
+length(filt_500_files)
+filt_500_files
 
-dens <- sapply(roi_files, function(f) {
+dens <- sapply(filt_500_files, function(f) {
   h <- readLASheader(f)
 
   # Point count
@@ -626,17 +626,17 @@ summary(dens)
 
 # Build a LAScatalog from those ROI clips 
 
-ctg_roi <- readLAScatalog(roi_files)
+ctg_filt_500 <- readLAScatalog(filt_500_files)
 
 # Get a summary of the catalog
-ctg_roi
+ctg_filt_500
 
 ######### Set up Run Information ##########
 
 # We will set the run to process by file (due to the area being so small) - This means it will need to be altered for the larger pipeline
 
-opt_chunk_size(ctg_roi)   <- 0 # set chunk size to 0
-opt_chunk_buffer(ctg_roi) <- 0 # 0m buffer for the run
+opt_chunk_size(ctg_filt_500)   <- 0 # set chunk size to 0
+opt_chunk_buffer(ctg_filt_500) <- 0 # 0m buffer for the run
 
 # Keep threads low for RAM stability
 lidR::set_lidr_threads(1)
@@ -644,8 +644,8 @@ lidR::set_lidr_threads(1)
 ########### Create Output Folders for Each Method ##############
 
 # Setting up output folders for each ground method allowing us to compare the two
-dir.create(file.path(roi_dir, "ground_csf"), showWarnings = FALSE, recursive = TRUE)
-dir.create(file.path(roi_dir, "ground_pmf"), showWarnings = FALSE, recursive = TRUE)
+dir.create(file.path(ctg_filt_500, "ground_csf"), showWarnings = FALSE, recursive = TRUE)
+dir.create(file.path(ctg_filt_500, "ground_pmf"), showWarnings = FALSE, recursive = TRUE)
 
 ########## CSF Run ##########
 
@@ -665,11 +665,11 @@ csf_alg <- csf(
 # Let lidR know how to name output files for the CSF run since we are not using chunks the {ORIGINALFILENAME} works
 # Write ouptut LAZ files into roi_dir/ground_csf/
 
-opt_output_files(ctg_roi) <- file.path(roi_dir, "ground_csf", "{ORIGINALFILENAME}_csf")
+opt_output_files(ctg_filt_500) <- file.path(roi_dir, "ground_csf", "{ORIGINALFILENAME}_csf")
 
 # Apply the CSF ground classification to each ROI clip and then return the LAS
 
-catalog_apply(ctg_roi, function(cluster) {
+catalog_apply(ctg_filt_500, function(cluster) {
   
   las <- readLAS(cluster)
   if(is.empty(las)) return(NULL)
@@ -683,29 +683,31 @@ catalog_apply(ctg_roi, function(cluster) {
 
 ####### PMF Run ######
 
+# Did not work well 
+
 # Define the PMF algorithm 
 
-pmf_alg <- pmf(
-  ws = c(3, 5, 7, 9),     # progressive window sizes
-  th = c(0.5, 1, 1.5, 2)  # progressive thresholds
-)
+# pmf_alg <- pmf(
+#  ws = c(3, 5, 7, 9),     # progressive window sizes
+#  th = c(0.5, 1, 1.5, 2)  # progressive thresholds
+#)
 
 
 # Create output names for the PMF
 
-opt_output_files(ctg_roi) <- file.path(roi_dir, "ground_pmf", "{ORIGINALFILENAME}_pmf")
+# opt_output_files(ctg_filt_500) <- file.path(roi_dir, "ground_pmf", "{ORIGINALFILENAME}_pmf")
 
 # Apply PMF ground classification algorithm to each ROI clip
 
-catalog_apply(ctg_roi, function(cluster) {
+#catalog_apply(ctg_filt_500, function(cluster) {
   
-  las <- readLAS(cluster)
-  if (is.empty(las)) return(NULL)
+#  las <- readLAS(cluster)
+#  if (is.empty(las)) return(NULL)
   
-  las <- classify_ground(las, pmf_alg)
+#  las <- classify_ground(las, pmf_alg)
   
-  las
-})
+#  las
+#})
 
 ```
 
@@ -713,7 +715,167 @@ CSF with the current parameters in the algorithm appear to be the best for our d
 
 ### Generate DEM 
 
+Now that our point cloud has had the ground classified. We can create a Digital Elevation Model by interpolating the points which will help us as we make the normalized canopy height model.
 
+```{r Generate DEM from Ground Classification - Center Boundary Box 500m}
+
+############ Get the Files Prepped #########
+# Path to your ground-classified files (CSF outputs)
+
+csf_500_dir <- "Output_Files/Filter_Chunks/ground_csf/"
+
+# List all .laz files inside that folder
+# pattern = "\\.laz$" means: only files ending in .laz
+# full.names = TRUE returns full file paths (required for catalog)
+
+csf_500_files <- list.files(
+  csf_500_dir,
+  pattern = "\\.laz$",
+  full.names = TRUE
+)
+
+stopifnot(length(csf_500_files) > 0)
+
+# Create a LAScatalog object from those files
+# A catalog does NOT load all points into RAM
+# It only stores references to the files on disk
+
+ctg_csf_500 <- readLAScatalog(csf_500_files)
+
+# Print catalog info (extent, density, number of files)
+
+ctg_csf_500
+
+######## Set up lidR ########
+
+# Process by file instead of spatial chunks so chunk_size = 0 means: treat each file as one unit
+
+opt_chunk_size(ctg_csf_500) <- 0
+
+# No buffer needed because
+
+opt_chunk_buffer(ctg_csf_500) <- 0
+
+# Limit threads to 1 to avoid RAM spikes
+
+lidR::set_lidr_threads(1)
+
+######## DEM ##########
+
+# Create an output folder for the DTMs
+
+dtm_dir <- "Output_Files/Filter_Chunks/dtm_csf_500_res2m/"
+dir.create(dtm_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Define a function that lidR will apply to EACH file in the catalog
+
+dtm_fun <- function(cluster, ...) {
+
+  # Read the LAS data for this file (NOT the whole catalog)
+  las <- readLAS(cluster)
+
+  # If the file/chunk has no points, safely skip it
+  # (prevents crashes in catalog_apply)
+  if (is.empty(las)) return(NULL)
+
+  # If no ground points exist, skip (prevents weird rasters)
+  if (!any(las@data$Classification == 2L)) return(NULL)
+  
+  # Create a Digital Terrain Model (DTM)
+  
+    dtm <- rasterize_terrain(
+    las, # Uses ONLY ground-classified points (class = 2)
+    res = 2, # 2 meter grid resolution
+    algorithm = tin() # tin() → Triangulated Irregular Network interpolation
+  )
+
+  # Return the raster so lidR can write it to disk
+  return(dtm)
+}
+
+# Tell lidR how to name file
+
+opt_output_files(ctg_csf_500) <- file.path(
+  dtm_dir,
+  "{ORIGINALFILENAME}_dtm"
+)
+
+# Apply the DTM function to every file in the catalog
+catalog_apply(ctg_csf_500, dtm_fun)
+```
+
+### Generate Normalized Canopy Height Model
+
+Now that the ground is classified and we have the dem, we can make the normalized point cloud heights (height above ground). We can then make the canopy height model from these points (canopy top height per pixel)
+
+```{r Generate Normalized Point Cloud and CHM - Center Boundary Box 500m}
+
+########## Normalized Point Cloud ############
+# Set up a directory to save files in 
+
+norm_dir <- "Output_Files/Filter_Chunks/norm_csf/"
+dir.create(norm_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Set up the lidR parameters
+
+opt_chunk_size(ctg_csf_500) <- 0
+opt_chunk_buffer(ctg_csf_500) <- 0
+lidR::set_lidr_threads(1)
+
+# Make a function normalize the point cloud
+
+norm_fun <- function(cluster, ...) {
+  las <- readLAS(cluster)
+  if (is.empty(las)) return(NULL)
+  if (!any(las@data$Classification == 2L)) return(NULL)  # must have ground
+
+  las <- normalize_height(las, tin())
+  las
+}
+
+# Tell lidR where to save and how to name files
+
+opt_output_files(ctg_csf_500) <- file.path(norm_dir, "{ORIGINALFILENAME}_norm")
+
+# Apply the normalization function to the catalog
+
+catalog_apply(ctg_csf_500, norm_fun)
+
+########### Build a Canopy Height Model ###########
+
+# Create a directory to save the files
+
+chm_dir <- "Output_Files/Filter_Chunks/chm_csf_res2m/"
+dir.create(chm_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Create a catalog of the normalized point cloud
+
+ctg_500_norm <- readLAScatalog(list.files(norm_dir, pattern="\\.laz$", full.names=TRUE))
+
+# Set up lidR parameters
+opt_chunk_size(ctg_500_norm) <- 0
+opt_chunk_buffer(ctg_500_norm) <- 0
+lidR::set_lidr_threads(1)
+
+# Create a function for the Canopy Height Model
+
+chm_fun <- function(cluster, ...) {
+  las <- readLAS(cluster)
+  if (is.empty(las)) return(NULL)
+
+  # Canopy height model: typically use max height per cell
+  chm <- rasterize_canopy(
+  las,
+  res = 1,
+  algorithm = pitfree(c(0,2,5,10,15,20,25), subcircle = 0.2)
+)
+
+  chm
+}
+
+opt_output_files(ctg_500_norm) <- file.path(chm_dir, "{ORIGINALFILENAME}_chm")
+catalog_apply(ctg_500_norm, chm_fun)
+```
 
 
 ## Check Pipeline on Full Tile
