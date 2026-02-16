@@ -543,7 +543,30 @@ CSF is controlled by:
 
 -   much much sagging is allowed --\> slope smoothing
 
-We will also be trying the PMF (progressive morphological filter) which creates a small window and fins the low points where it then gradually increases the window size and allow higher thresholds as terrain scale increases.Then, we will compare the two. I expect that the CSF may perform better compared to the PMF due to the mountainous terrain.
+
+Cloth Resolution typical values: 
+
+-   0.5 - 0.75 m = very fine cloth (captures small terrain detail)
+
+-   1 m = medium cloth (balanced)
+
+-   2–3 m = coarse cloth (very smooth terrain)
+
+For our data set we have moderate-to-high density, so we could try 0.5m if 1m isn't working well. The smaller values (0.5m) typically is recommended for dense canopy, complex terrain, and reduces over-smoothing. However, it can eat a lot of RAM and run much slower.
+
+Rigidness typical values:
+
+-   1 = flexible cloth (follows small bumps)
+-   2 = balanced (good starting point)
+-   3 = very stiff (smooth terrain)
+
+Class Threshold typical values: 
+
+-   0.3 = stricter ground and may miss true ground under canopy
+-   0.5 = good starting point and mid-range
+-   0.7 - 1 = risk classifying low vegetation as ground
+
+We will also be trying the PMF (progressive morphological filter) which creates a small window and finds the low points where it then gradually increases the window size and allow higher thresholds as terrain scale increases.Then, we will compare the two. I expect that the CSF may perform better compared to the PMF due to the mountainous terrain.
 
 PMF is controlled by:
 
@@ -553,29 +576,150 @@ PMF is controlled by:
 
 **Here we will begin with starting with the default then check the DTM and tune from there. Since we are classifying these ourselves, we should be on the lookout for DTM pits, sinks, or 'wavy' terrain**
 
+Window Size Typical Values:
+
+-   3-5 = small to detect micro-terrain but may misclassify roots/rocks
+-   5-10 = balanced (good default)
+-   10+ = large for very smooth but can miss real terrain detail
+
+Height Threshold Typical Values: 
+
+-   0.5-1.0 = flat terrain
+-   1.0-2.0 = forested terrain
+-   1.5-3.0 = steep/mountainous 
+
 Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
 
-We will want to have a chunk and buffer window of ~150 and ~30, respectively for this and future parts of the pipeline.
 
-```{r Ground Classification}
-
-# Father and Sons
-##################################################### Cloth Simulation Filter ##########################################
-# We will start with the default setting and we can make adjustments as we go
-FSCamp_Grnd_CSF <- classify_ground(FSCamp_Filter, algorithm = csf())
-lidRviewer::view(FSCamp_Grnd_CSF)
-# Default setting appear pretty good, but it looks like it may be listing low vegetation 
-lidRviewer::view(F_S_Camp)  # if you need to compare
+```{r Generate Ground Classification Pipeline - Center Boundary Box 500m}
 
 
-# Bear Gulch
+############# Set up Tiles (Do NOT run if you are running the previous chunk above and it is loaded into the environment) #############
+
+# I had to close R so I need to find the filtered 500m centered ROI clips (so I do not need to re-run the filter)
+
+roi_dir   <- "Output_Files/Filter_Chunks/"
+
+# Grab only the ROI outputs that end with '_center500_filtered.laz'
+roi_files <- list.files(roi_dir, pattern = "_center500_filtered\\.laz$", full.names = TRUE)
+
+# Quick sanity check: how many files are there?
+
+length(roi_files)
+roi_files
+
+dens <- sapply(roi_files, function(f) {
+  h <- readLASheader(f)
+
+  # Point count
+  npts <- h@PHB[["Number of point records"]]
+
+  # Bounding box area (m²)
+  area <- (h@PHB[["Max X"]] - h@PHB[["Min X"]]) *
+          (h@PHB[["Max Y"]] - h@PHB[["Min Y"]])
+
+  npts / area
+})
+
+dens
+summary(dens)
+
+# Build a LAScatalog from those ROI clips 
+
+ctg_roi <- readLAScatalog(roi_files)
+
+# Get a summary of the catalog
+ctg_roi
+
+######### Set up Run Information ##########
+
+# We will set the run to process by file (due to the area being so small) - This means it will need to be altered for the larger pipeline
+
+opt_chunk_size(ctg_roi)   <- 0 # set chunk size to 0
+opt_chunk_buffer(ctg_roi) <- 0 # 0m buffer for the run
+
+# Keep threads low for RAM stability
+lidR::set_lidr_threads(1)
+
+########### Create Output Folders for Each Method ##############
+
+# Setting up output folders for each ground method allowing us to compare the two
+dir.create(file.path(roi_dir, "ground_csf"), showWarnings = FALSE, recursive = TRUE)
+dir.create(file.path(roi_dir, "ground_pmf"), showWarnings = FALSE, recursive = TRUE)
+
+########## CSF Run ##########
+
+# Define the algorithm settings 
+## Cloth resolution - in m represents the 'grid size' of the cloth (smaller = more detailed, but slower)
+## rigidness - how stiff the cloth is (higher = smouther surface)
+## Class threshold - in m represents how far a point can be above the cloth and still be ground 
+## Slope smooth - a setting that can help on slopes
+
+csf_alg <- csf(
+  sloop_smooth = TRUE, 
+  class_threshold = 0.5, # 0.5m
+  cloth_resolution = 0.5, # 0.75m --> not great changed to  0.5
+  rigidness = 2
+)
+
+# Let lidR know how to name output files for the CSF run since we are not using chunks the {ORIGINALFILENAME} works
+# Write ouptut LAZ files into roi_dir/ground_csf/
+
+opt_output_files(ctg_roi) <- file.path(roi_dir, "ground_csf", "{ORIGINALFILENAME}_csf")
+
+# Apply the CSF ground classification to each ROI clip and then return the LAS
+
+catalog_apply(ctg_roi, function(cluster) {
+  
+  las <- readLAS(cluster)
+  if(is.empty(las)) return(NULL)
+  
+  # Ground classification: sets classification == 2 for ground points 
+  las <- classify_ground(las, csf_alg)
+  
+  # returning 'las' tells lidR to write it to the opt_output_files() path
+  las
+})
+
+####### PMF Run ######
+
+# Define the PMF algorithm 
+
+pmf_alg <- pmf(
+  ws = c(3, 5, 7, 9),     # progressive window sizes
+  th = c(0.5, 1, 1.5, 2)  # progressive thresholds
+)
 
 
-# Thompson Flat
+# Create output names for the PMF
+
+opt_output_files(ctg_roi) <- file.path(roi_dir, "ground_pmf", "{ORIGINALFILENAME}_pmf")
+
+# Apply PMF ground classification algorithm to each ROI clip
+
+catalog_apply(ctg_roi, function(cluster) {
+  
+  las <- readLAS(cluster)
+  if (is.empty(las)) return(NULL)
+  
+  las <- classify_ground(las, pmf_alg)
+  
+  las
+})
+
 ```
+
+CSF with the current parameters in the algorithm appear to be the best for our data. We can now the classification to make a DEM and a normalized canopy height model. 
+
+### Generate DEM 
+
+
 
 
 ## Check Pipeline on Full Tile
+
+
+Before we use the pipeline on the entire dataset, we want to verify that it will work correct on a full tile and there isn't any weird artifacts that we will want to clear up. Here we will use the same tiles that we used to make our clipped 500m sub-tiles. This will also be a way to get an idea of how long processing may take.
 
 We will also want to inspect the full tile as well in CloudCompare
 
