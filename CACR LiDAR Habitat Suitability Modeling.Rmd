@@ -717,7 +717,7 @@ CSF with the current parameters in the algorithm appear to be the best for our d
 
 Now that our point cloud has had the ground classified. We can create a Digital Elevation Model by interpolating the points which will help us as we make the normalized canopy height model.
 
-```{r Generate DEM from Ground Classification - Center Boundary Box 500m}
+```{r Generate DEM, Slope, Aspect from Ground Classification - Center Boundary Box 500m}
 
 ############ Get the Files Prepped #########
 # Path to your ground-classified files (CSF outputs)
@@ -730,7 +730,7 @@ csf_500_dir <- "Output_Files/Filter_Chunks/ground_csf/"
 
 csf_500_files <- list.files(
   csf_500_dir,
-  pattern = "\\.laz$",
+  pattern = "\\.(las|laz)$",
   full.names = TRUE
 )
 
@@ -764,7 +764,7 @@ lidR::set_lidr_threads(1)
 
 # Create an output folder for the DTMs
 
-dtm_dir <- "Output_Files/Filter_Chunks/dtm_csf_500_res2m/"
+dtm_dir <- "Output_Files/Filter_Chunks/dtm_csf_500_res1m/"
 dir.create(dtm_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Define a function that lidR will apply to EACH file in the catalog
@@ -785,7 +785,7 @@ dtm_fun <- function(cluster, ...) {
   
     dtm <- rasterize_terrain(
     las, # Uses ONLY ground-classified points (class = 2)
-    res = 2, # 2 meter grid resolution
+    res = 1, # 1 meter grid resolution
     algorithm = tin() # tin() → Triangulated Irregular Network interpolation
   )
 
@@ -802,6 +802,26 @@ opt_output_files(ctg_csf_500) <- file.path(
 
 # Apply the DTM function to every file in the catalog
 catalog_apply(ctg_csf_500, dtm_fun)
+
+###### Slope and Aspect ######
+
+dtm_files <- list.files(dtm_dir, pattern="\\.(tif|grd)$", full.names=TRUE, ignore.case=TRUE)
+
+slope_dir <- "Output_Files/Filter_Chunks/slope_res1m/"
+asp_dir   <- "Output_Files/Filter_Chunks/aspect_res1m/"
+dir.create(slope_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(asp_dir,   showWarnings = FALSE, recursive = TRUE)
+
+for (f in dtm_files) {
+  dem <- rast(f)
+
+  slope <- terrain(dem, v = "slope", unit = "degrees")
+  aspect <- terrain(dem, v = "aspect", unit = "degrees")
+
+  base <- tools::file_path_sans_ext(basename(f))
+  writeRaster(slope,  file.path(slope_dir, paste0(base, "_slope.tif")), overwrite = TRUE)
+  writeRaster(aspect, file.path(asp_dir,   paste0(base, "_aspect.tif")), overwrite = TRUE)
+}
 ```
 
 ### Generate Normalized Canopy Height Model
@@ -850,7 +870,7 @@ dir.create(chm_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Create a catalog of the normalized point cloud
 
-ctg_500_norm <- readLAScatalog(list.files(norm_dir, pattern="\\.laz$", full.names=TRUE))
+ctg_500_norm <- readLAScatalog(list.files(norm_dir, pattern="\\.(las|laz)$", full.names=TRUE, ignore.case=TRUE))
 
 # Set up lidR parameters
 opt_chunk_size(ctg_500_norm) <- 0
@@ -877,6 +897,81 @@ opt_output_files(ctg_500_norm) <- file.path(chm_dir, "{ORIGINALFILENAME}_chm")
 catalog_apply(ctg_500_norm, chm_fun)
 ```
 
+### Understory Density and Complexity
+
+```{r Generate Understory and Complexity - Center Boundary Box 500m}
+
+###### Understory Metrics ##########
+
+under_dir <- "Output_Files/Filter_Chunks/understory_res10m/"
+dir.create(under_dir, showWarnings = FALSE, recursive = TRUE)
+
+opt_chunk_size(ctg_500_norm) <- 0
+opt_chunk_buffer(ctg_500_norm) <- 0
+lidR::set_lidr_threads(1)
+
+understory_fun <- function(cluster, ...) {
+  las <- readLAS(cluster)
+  if (is.empty(las)) return(NULL)
+
+  # A clean base name for outputs (no extension)
+  base <- tools::file_path_sans_ext(basename(cluster@files))
+
+  # 1) total point density (all points)
+  total_density <- rasterize_density(las, res = 10)
+
+  # 2) understory points: non-ground and < 2m above ground
+  understory_points <- filter_poi(las, Classification != 2L & Z < 2)
+
+  understory_density <- rasterize_density(understory_points, res = 10)
+
+  # 3) percent understory (avoid divide-by-zero)
+  percent_under <- understory_density / total_density
+  percent_under[is.infinite(percent_under)] <- NA
+  percent_under[is.nan(percent_under)] <- NA
+
+  # Write three separate GeoTIFFs
+  writeRaster(rast(total_density),
+              filename = file.path(under_dir, paste0(base, "_dens_total_10m.tif")),
+              overwrite = TRUE)
+
+  writeRaster(rast(understory_density),
+              filename = file.path(under_dir, paste0(base, "_dens_under_0to2m_10m.tif")),
+              overwrite = TRUE)
+
+  writeRaster(rast(percent_under),
+              filename = file.path(under_dir, paste0(base, "_pct_under_0to2m_10m.tif")),
+              overwrite = TRUE)
+
+  NULL
+}
+
+catalog_apply(ctg_500_norm, understory_fun)
+
+
+###### Complexity #######
+
+complex_dir <- "Output_Files/Filter_Chunks/complexity_res10m/"
+dir.create(complex_dir, showWarnings = FALSE, recursive = TRUE)
+
+complex_fun <- function(cluster, ...) {
+  las <- readLAS(cluster)
+  if (is.empty(las)) return(NULL)
+
+  # Use normalized heights; remove ground if you want canopy-only complexity:
+  las_can <- filter_poi(las, Classification != 2L & Z > 0)
+
+  # coefficient of variation of heights in each 10m pixel
+  comp <- pixel_metrics(las_can, ~ sd(Z) / mean(Z), res = 10)
+
+  comp
+}
+
+opt_output_files(ctg_500_norm) <- file.path(complex_dir, "{ORIGINALFILENAME}_complexity")
+catalog_apply(ctg_500_norm, complex_fun)
+
+### If you prefer complexity that includes all points (including ground), remove the filter_poi() line — but for vegetation structure metrics, canopy-only is usually more meaningful.
+```
 
 ## Check Pipeline on Full Tile
 
