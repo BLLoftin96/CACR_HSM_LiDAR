@@ -77,6 +77,7 @@ install.packages('lidRviewer', repos = c('https://r-lidar.r-universe.dev'))
 install.packages('dplyr')
 install.packages('terra')
 install.packages('RCSF')
+install.packages('future')
 
 # Load
 library(lidR)
@@ -85,6 +86,7 @@ library(lidRviewer)
 library(dplyr)
 library(terra)
 library(RCSF)
+library(future)
 ```
 
 ## Data Inspection
@@ -335,7 +337,7 @@ In general, we do see some points that float above the tree line as well as some
 
 Based on this information, we should reclassify these tiles. We should begin by working with these tiles to create a general pipeline for classification (which we can then use the **batch** function to do to all tiles).
 
-## Classification Pipeline (3 Tiles)
+## Classification Pipeline (Clipped Tiles)
 
 Here our goal is to create a pipeline by generating code using these 3 tiles. We should then be able to batch these to other tiles in the study area. Process steps:
 
@@ -878,7 +880,7 @@ catalog_apply(ctg_500_norm, chm_fun)
 ```
 
 
-## Check Pipeline on Full Tile
+## Check Pipeline on Full Tiles
 
 
 Before we use the pipeline on the entire dataset, we want to verify that it will work correct on a full tile and there isn't any weird artifacts that we will want to clear up. Here we will use the same tiles that we used to make our clipped 500m sub-tiles. This will also be a way to get an idea of how long processing may take.
@@ -887,145 +889,113 @@ We will also want to inspect the full tile as well in CloudCompare
 
 ```{r Check Full Tiles}
 
-# Load the Elko Tile 
-P_S_Camp_Elko = readLAS('R:/ElkoNW_LAZ/USGS_LPC_NV_NorthWestElko_2020_D20_11TQG260710.laz')
+########## Load Test Tiles ###########
 
-# Filter
-P_S_Camp_Elko_Filter <- filter_poi(P_S_Camp_Elko, !Withheld_flag & !Synthetic_flag)
-P_S_Camp_Elko_Filter <- classify_noise(P_S_Camp_Elko_Filter, ivf(res = 4, n = 12))
-P_S_Camp_Elko_Filter <- filter_poi(P_S_Camp_Elko_Filter, !Classification %in% c(7L, 18L))
+# For this it will be using the pipeline_files that we created in the Filtered Section above so you will need to run that FIRST
 
-# Save
-writeLAS(P_S_Camp_Elko_Filter, "Output_Files/Filtered_Tile/PSCamp_Elko_Filter.laz")
+test_full_tiles <- pipeline_files[c(1, 3, 5, 7)] # picking tiles for Porcupine Springs, Diamondfield Jack, ref3 14, and Independence Lake
 
-# Load Diamondfield Jack 
-D_J_Camp_12 = readLAS('R:/Part22/USGS_LPC_ID_SouthernID_2018_D19_11TQG230725.laz')
+ctg_full_tiles <- lidR::readALScatalog(test_full_tiles)
 
-# Filter
-D_J_Camp_12_Filter <- filter_poi(D_J_Camp_12, !Withheld_flag & !Synthetic_flag)
-D_J_Camp_12_Filter <- classify_noise(D_J_Camp_12_Filter, ivf(res = 4, n = 12))
-D_J_Camp_12_Filter <- filter_poi(D_J_Camp_12_Filter, !Classification %in% c(7L, 18L))
+######### lidR Settings #############
 
-# Save
-writeLAS(P_S_Camp_Elko_Filter, "Output_Files/Filtered_Tile/DJCamp_12_Filter.laz")
+lidR::opt_chunk_size(ctg_full_tiles) <- 0 # Whole tile
+lidR::opt_chunk_buffer(ctg_full_tiles) <- 0 # no buffer - cause we used the whole tile
+options(lidR.cores = 6)
 
-# Load Reference 3 #14 
-ref3_14 = readLAS('R:/SouthernIdaho2018_14_LAZ/SouthernIdaho2018_14_LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM850725.laz')
+####### Create Output ########
 
-# Filter
-ref3_14_Filter <- filter_poi(ref3_14, !Withheld_flag & !Synthetic_flag)
-ref3_14_Filter <- classify_noise(ref3_14_Filter, ivf(res = 4, n = 12))
-ref3_14_Filter <- filter_poi(ref3_14_Filter, !Classification %in% c(7L, 18L))
+out_dir <- "C:/lidar_work/output/Filter_FullTiles" # create a space to save these filtered tiles
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Save
-writeLAS(P_S_Camp_Elko_Filter, "Output_Files/Filtered_Tile/ref3_14_Filter.laz")
+lidR::opt_output_files(ctg_full_tiles) <- file.path(out_dir, "{ORIGINALFILENAME}_filtered") # Gives lidR a naming scheme 
 
-# Load Independence Lake Camp 
-I_L_Camp_17 = readLAS('R:/LAZ/USGS_LPC_ID_SouthernID_2018_D19_12TTM790770.laz')
+###### Filter Pipeline #######
 
-# Filter
-I_L_Camp_17_Filter <- filter_poi(I_L_Camp_17, !Withheld_flag & !Synthetic_flag)
-I_L_Camp_17_Filter <- classify_noise(I_L_Camp_17_Filter, ivf(res = 4, n = 12))
-I_L_Camp_17_Filter <- filter_poi(I_L_Camp_17_Filter, !Classification %in% c(7L, 18L))
+# Create filter function for a tile
+filter_fun <- function(las, ...) {
 
-# Save
-writeLAS(I_L_Camp_17_Filter, "Output_Files/Filtered_Tile/ILCamp_17_Filter.laz")
-```
+  # If lidR passes a LAScluster, read it into a LAS object
+  if (inherits(las, "LAScluster")) {
+    las <- lidR::readLAS(las)
+  }
 
+  if (is.null(las) || lidR::is.empty(las)) return(NULL)
 
-```{r Pipe-no bounding box}
-lidR::set_lidr_threads(1)
+  las <- lidR::filter_poi(las, !Withheld_flag & !Synthetic_flag)
+  las <- lidR::classify_noise(las, lidR::ivf(res = 4, n = 12))
+  las <- lidR::filter_poi(las, !Classification %in% c(7L, 18L))
 
-# Set the chunk and buffer window 
-opt_chunk_size(ctg_test) <- 150
-opt_chunk_buffer(ctg_test) <- 0
-
-# Output folder
-out_dir <- "Output_Files/Filter_Chunks/"
-dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-
-# This will build output names from the source file name
-opt_output_files(ctg_test) <- file.path(out_dir, "{XLEFT}_{YBOTTOM}_{XRIGHT}_{YTOP}_filtered")
-
-# Create a function to apply filter
-QA_filter <- function(chunk, ...) {
-
-  las <- readLAS(chunk)
-
-  # If the chunk has no points, return NULL (required by catalog_apply)
-  if (is.empty(las)) return(NULL)
-
-  # 1) Remove withheld + synthetic
-  las <- filter_poi(las, !Withheld_flag & !Synthetic_flag)
-
-  # 2) Classify noise using IVF
-  las <- classify_noise(las, ivf(res = 4, n = 12))
-
-  # 3) Remove noise classes (7 and 18)
-  las <- filter_poi(las, !Classification %in% c(7L, 18L))
-
-  # If filtering removed everything, return NULL
-  if (is.empty(las)) return(NULL)
-
+  if (lidR::is.empty(las)) return(NULL)
   las
 }
 
+# Write las chunks to disk using opt_output_files template above
+lidR::catalog_apply(ctg_full_tiles, filter_fun)
 
-# Run once: this will write filtered chunks to disk
-catalog_apply(ctg_test, QA_filter)
+list.files("C:/lidar_work/output/Filter_FullTiles", pattern = "filtered.*\\.(las|laz)$", full.names = TRUE)
 
+# Everything looks great!
 
+###### Classification ##########
 
-############## OR ###########
+# Use your filtered full tiles
 
-# pick a few tiles (e.g., 1 per flight)
-qa_files <- c(
-  pipeline_files[1],
-  pipeline_files[3],
-  pipeline_files[5],
-  pipeline_files[7],
-  pipeline_files[8]
+filt_dir   <- "C:/lidar_work/output/Filter_FullTiles"
+filt_files <- list.files(filt_dir, pattern = "_filtered\\.las$", full.names = TRUE)
+
+length(filt_files)
+filt_files
+
+# Catalog
+
+ctg_csf_fullTile <- readLAScatalog(filt_files)
+
+# Process by file -> 1 output per input tile
+
+opt_chunk_size(ctg)   <- 0
+opt_chunk_buffer(ctg) <- 0
+
+# Parallel (older lidR)
+
+options(lidR.cores = 6)
+
+# Keep internal threads low (stable)
+
+lidR::set_lidr_threads(1)
+
+# Output folders
+
+out_dir_csf <- "C:/lidar_work/output/Ground_FullTiles"
+dir.create(file.path(out_dir_csf, "ground_csf"), recursive = TRUE, showWarnings = FALSE)
+
+# CSF algorithm (your settings)
+
+csf_alg <- csf(
+  sloop_smooth     = TRUE,
+  class_threshold  = 0.5,
+  cloth_resolution = 0.5,
+  rigidness        = 2
 )
 
-out_dir <- "Output_Files/Filter_Tiles/"
-dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+# Naming: one output per file
 
-for (f in qa_files) {
+opt_output_files(ctg_csf_fullTile) <- file.path(out_dir_csf, "ground_csf", "{ORIGINALFILENAME}_csf")
 
-  message("Processing: ", f)
+# Run
 
-  # Read ONE tile
-  las <- readLAS(f)
-  if (is.empty(las)) {
-    message("  -> empty, skipping")
-    next
-  }
+catalog_apply(ctg_csf_fullTile, function(cluster) {
 
-  # Filter: withheld + synthetic
-  las <- filter_poi(las, !Withheld_flag & !Synthetic_flag)
+  las <- readLAS(cluster)
+  if (is.empty(las)) return(NULL)
 
-  # Noise classify + remove 7/18
-  las <- classify_noise(las, ivf(res = 4, n = 12))
-  las <- filter_poi(las, !Classification %in% c(7L, 18L))
+  las <- classify_ground(las, csf_alg)
 
-  if (is.empty(las)) {
-    message("  -> empty after filtering, skipping")
-    rm(las); gc()
-    next
-  }
-
-  # Output name
-  base <- tools::file_path_sans_ext(basename(f))
-  out_file <- file.path(out_dir, paste0(base, "_filtered.laz"))
-
-  # Skip if already written
-  if (!file.exists(out_file)) {
-    writeLAS(las, out_file)
-    message("  -> wrote: ", out_file)
-  } else {
-    message("  -> already exists, skipping")
-  }
-
-  rm(las); gc()
-}
+  las
+})
 ```
+
+
+## Full Study Area Batched
+
+
