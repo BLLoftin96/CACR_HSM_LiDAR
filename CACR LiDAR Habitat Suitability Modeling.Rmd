@@ -64,9 +64,8 @@ LiDAR data was taken from [existing data from the Idaho LiDAR Consortium](https:
 
 ### Southern ID 2018 \# 17
 
-# Code
 
-## Install Packages
+# Install Packages
 
 ```{r Install Packages, message=FALSE, warning=FALSE}
 # Install
@@ -78,6 +77,9 @@ install.packages('dplyr')
 install.packages('terra')
 install.packages('RCSF')
 install.packages('future')
+install.packages('future.apply')
+install.packages('progressr')
+install.packages('data.table')
 
 # Load
 library(lidR)
@@ -87,9 +89,12 @@ library(dplyr)
 library(terra)
 library(RCSF)
 library(future)
+library(future.apply)
+library(progressr)
+library(data.table)
 ```
 
-## Data Inspection
+# Data Inspection
 
 Originally, I was using lidRviewer package in R to visually inspect the areas to see if they matched areas I had been to. However, given my storage, it wasn't possible to load the subset of tiles fully without overloading my computer or R's memory. To resolve this, I am doing a quick look over of the tiles in RStudio to quickly get a sense of whether they look natural and if they match up with the area they are intended to represent. After, the full tile is removed so I can inspect the next one. Then the full tiles are loaded into CloudCompare (version 2.13.2) for a better quality assessment to check the density patterns, canopy penetration, and ground realism. Once tiles are assess, we can configure the pipeline for filtering, classification, and generating forest metrics.
 
@@ -133,7 +138,7 @@ Since I am using the raw point cloud, we are likely to see withheld and syntheti
 
 -   *densified surfaces in workflows*
 
-### Elko NW 2023
+## Elko NW 2023
 
 Based on the Elko flight reports they used 3 providers using 3 different LiDAR systems (see flight report for additional details) which had a max return per pulse of 7 to 8 (8 being the most common).
 
@@ -182,7 +187,7 @@ lidRviewer::view(Log_LPO034_LPO130_Elko)
 
 Overall, lidRviewer seems to indicate the area looks visually valid. Looks like some areas may have some error points and the laser couldn't always get the entire way to the ground so there are holes in there.
 
-### Southern ID 2018 \# 12
+## Southern ID 2018 \# 12
 
 Southern ID 2018 #12 appears to have 4 different providers using 2 different systems of LiDAR. Notably the Galaxy PRIME system had a max of 7 - 8 returns while the VQ1560i had unlimited returns. CloudCompare view was excellent with the number of returns being similar to that noted in the flight plan (\~7 or 8).
 
@@ -229,7 +234,7 @@ lidRviewer::view(Log_LPO030_12)
 # lidRviewer shows many points that are above the treeline. This region is probably the densest for the area, but it looked good from the quick check. CloudCompare appears to be what I expect. There is some very very densely packed trees here which may be hard to delineate.
 ```
 
-### Southern ID 2018 \# 14
+## Southern ID 2018 \# 14
 
 Flight appears to have hired 3 providers with 3 different LiDAR systems with 2 having unlimited returns and 1 having 9 max returns. There were no areas in this section that I had surveyed. Instead, I opted to use 3 locations of varying densities to see how they look.
 
@@ -269,7 +274,7 @@ lidRviewer::view(ref3_14)
 # least dense area --> pretty much all sagebrush and low trees. Some points above treeline. CC shows 4 returns and clearly shows the open area.
 ```
 
-### Southern ID 2018 \# 15
+## Southern ID 2018 \# 15
 
 Flight had 2 providers with the same LiDAR system both with unlimited returns. There were no areas in this section that I had surveyed and this area takes up the smallest area. Chose areas around river which appeared to have trees that I could assess. Max number of returns shows only 3 for ref1 and ref2, but area appears to have low vegetation so this may be the max number of returns needed.
 
@@ -298,7 +303,7 @@ lidRviewer::view(ref2_15)
 # area is sparse and appears to be mainly sagebrush and we still see floating points. CC shows similar view with vegetation looking to be predominantly sage brush.
 ```
 
-### Southern ID 2018 \# 17
+## Southern ID 2018 \# 17
 
 Flight had 3 providers with 2 LiDAR systems of which the VQ1560i had unlimited returns while the Galaxy-PRIME had a max of 7. CC shows max return of 6.
 
@@ -337,7 +342,7 @@ In general, we do see some points that float above the tree line as well as some
 
 Based on this information, we should reclassify these tiles. We should begin by working with these tiles to create a general pipeline for classification (which we can then use the **batch** function to do to all tiles).
 
-## Classification Pipeline (Clipped Tiles)
+# Pipeline Code (Clipped Tiles)
 
 Here our goal is to create a pipeline by generating code using these 3 tiles. We should then be able to batch these to other tiles in the study area. Process steps:
 
@@ -350,7 +355,7 @@ Here our goal is to create a pipeline by generating code using these 3 tiles. We
 4.  Generate a Normalized Canopy Height Model
 
 
-### Create Catalog for Pipeline
+## Create Catalog for Pipeline
 
 **To do this step and save memory, we are going to create a small catalog of our earlier tiles to represent different densities, slopes, and regions in order to test whether the pipeline fails to accommodate any of these things. We will use the following 8 tiles:**
 
@@ -444,7 +449,7 @@ plot(sf::st_geometry(qa_polys), add = TRUE, border = "red", lwd = 2)
 ```
 
 
-### Filter Noise
+## Filter Noise
 
 When looking at the datasets there are some obvious levels of noise (in fact the amount of noise increased with each tile we examined). Filtering out these extraneous high and low (below the scene) points will help to reduce error and get us closer to the actual landscape. Note: this is only using distance to neighboring points/returns and no use of scan angle/intensity
 
@@ -533,7 +538,7 @@ for (k in seq_along(pipeline_files)) {
 We will then check the chunks in CloudCompare to ensure there isn't any canopy shearing or noise left behind. 
 
 
-### Ground Classification
+## Ground Classification
 
 Working in mountainous forests, we will need to keep track of the parameters that we use. It is standard to use a cloth simulation filter which is available through the LiDAR function csf(). With the csf function, the LiDAR point cloud is inverted, and a simulation of a “rigid cloth” is draped over the inverted point cloud. The simulated cloth surface is then used to determine which points are associated with the ground.
 
@@ -715,7 +720,7 @@ catalog_apply(ctg_filt_500, function(cluster) {
 
 CSF with the current parameters in the algorithm appear to be the best for our data. We can now the classification to make a DEM and a normalized canopy height model. 
 
-### Generate DEM 
+## Generate DEM, Slope, and Aspect
 
 Now that our point cloud has had the ground classified. We can create a Digital Elevation Model by interpolating the points which will help us as we make the normalized canopy height model.
 
@@ -826,7 +831,7 @@ for (f in dtm_files) {
 }
 ```
 
-### Generate Normalized Canopy Height Model
+## Generate Normalized Canopy Height Model
 
 Now that the ground is classified and we have the dem, we can make the normalized point cloud heights (height above ground). We can then make the canopy height model from these points (canopy top height per pixel)
 
@@ -899,7 +904,7 @@ opt_output_files(ctg_500_norm) <- file.path(chm_dir, "{ORIGINALFILENAME}_chm")
 catalog_apply(ctg_500_norm, chm_fun)
 ```
 
-### Understory Density and Complexity
+## Understory Density and Complexity
 
 ```{r Generate Understory and Complexity - Center Boundary Box 500m}
 
@@ -975,7 +980,7 @@ catalog_apply(ctg_500_norm, complex_fun)
 ### If you prefer complexity that includes all points (including ground), remove the filter_poi() line — but for vegetation structure metrics, canopy-only is usually more meaningful.
 ```
 
-## Check Pipeline on Full Tiles
+# Check Pipeline on Full Tiles
 
 
 Before we use the pipeline on the entire dataset, we want to verify that it will work correct on a full tile and there isn't any weird artifacts that we will want to clear up. Here we will use the same tiles that we used to make our clipped 500m sub-tiles. This will also be a way to get an idea of how long processing may take.
@@ -1091,6 +1096,174 @@ catalog_apply(ctg_csf_fullTile, function(cluster) {
 ```
 
 
-## Full Study Area Batched
+# Full Study Area Batched
 
+Now that the pipeline is defined and tested on a few tiles. We can apply it to our study area with a few adjustments. We can use the *future* package to parallel process the liDAR data and try to work through the pipeline faster. We will start by setting up this process and creating a place to save temp files. Temp files are a just-in-case measure since most of the data is connecting to a network. I will be saving the fully processed tiles in the network drive in case we have to access them later from a different computer.
+
+## Setup
+
+```{r Setup Parallel Processing and Temp Files}
+# My lidR version uses this for catalog parallelism. This code allows for 8 tiles to be processed at 1 time. 
+options(lidR.cores = 8) # number of tiles processed in parallel
+lidR::set_lidr_threads(1) # keep internal threads low to avoid RAM spikes per worker
+
+# Keep temporary files local 
+dir.create("C:/lidar_work/temp", recursive = TRUE, showWarnings = FALSE)
+Sys.setenv(TMPDIR = "C:/lidar_work/temp")
+
+# Create directory to save our data in our network drive
+run_root <- "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run" # creates a base folder that we can come back to
+step_dirs <- c(
+  "01_filtered",
+  "02_ground_csf",
+  "03_dem",
+  "04_normalized",
+  "05_chm",
+  "06_metrics",
+  "logs"
+) # lists each pipeline step
+
+for (d in step_dirs) {
+  dir.create(file.path(run_root, d), recursive = TRUE, showWarnings = FALSE)
+} # Create a folder for each step 
+```
+
+Next we want to direct R to where our files live. As a note, each folder is the entire laz dataset for a single flight. File names are not consistent so we will have to tell R to take any LAZ file from within our network drive (R:/). Our shapefile for our study area is also found in this network drive and we will want to load it in because we only want to spend time on tiles that intersect our study area.
+
+## Load Data
+
+```{r Load Tiles and Shapefiles}
+# Save pathway to the shapefile (note: there are two polygons)
+study_area_path <- "R:/Shapefiles/StudyArea.shp"
+
+# Load Study area shapefile
+study_area <- st_read(study_area_path, quiet = TRUE)
+
+# Validate the study area
+study_area <- st_make_valid(study_area)
+
+study_area <- st_union(study_area)
+
+
+# Root where ALL flights/tiles live (this is across multiple folders)
+lidar_root <- "R:/"
+
+# Recursively find ALL LAZ/LAS tiles in the R network drive
+tile_files <- list.files(
+  lidar_root,
+  pattern = "\\.(laz|las)$",
+  recursive = TRUE, 
+  full.names = TRUE
+)
+
+length(tile_files)
+tile_files[1:10]
+```
+
+We will want to verify that the shapefile and LAZ/LAS files are in the same CRS otherwise this whole thing will fail.
+
+```{r Verify CRS}
+# CRS of the shapefile should be EPSG: 8826 but let's confirm
+st_crs(study_area)
+
+# Try to find LAZ CRS
+h1 <- lidR::readLASheader(tile_files[1])
+las_has_crs <- FALSE
+try({
+     crs_guess <- lidR::st_crs(h1)
+     if (!is.na(crs_guess)) {
+         print(crs_guess)
+         las_has_crs <- TRUE
+     }
+ }, silent = TRUE)
+
+# 1) Pick a representative LAZ from your dataset (any one is fine)
+one_tile <- tile_files[1]
+
+# 2) Read CRS from LAZ header
+h1 <- lidR::readLASheader(one_tile)
+crs_lidar <- lidR::st_crs(h1)   # you already proved this works
+
+crs_lidar  # print it
+
+# Transform study area to match LAZ
+if (is.na(st_crs(study_area))) stop("Study shapefile CRS is NA in R (undefined). Fix it before transforming.")
+
+study_area <- st_transform(study_area, crs_lidar)
+st_crs(study_area) == st_crs(h1) #asks true or false if they match
+```
+
+## Find Only Tiles in Study Area
+
+We do not want to process the entire dataset. We ONLY want those that fall within our study area, so we are going to use the st_intersection function to find only tiles in our study area. Instead of loading in every point cloud or cataloging all of the tiles, we are going to create a table that lists the bounding box of each LAZ/LAS file and use that to find which overlap.
+
+```{r Find the Tiles!}
+# Build a footprint (bbox polygon) for every LAZ/LAS using the header
+study_union <- st_union(study_area)
+
+# --- single pass header read (with tryCatch) ---
+tile_dt <- rbindlist(lapply(tile_files, function(f) {
+  tryCatch({
+    h <- lidR::readLASheader(f)
+    data.table(
+      file = f,
+      ok   = TRUE,
+      xmin = h@PHB[["Min X"]],
+      xmax = h@PHB[["Max X"]],
+      ymin = h@PHB[["Min Y"]],
+      ymax = h@PHB[["Max Y"]]
+    )
+  }, error = function(e) {
+    data.table(file = f, ok = FALSE)
+  })
+}), fill = TRUE)
+
+# --- sanity: header failures ---
+sum(!tile_dt$ok)
+# Save immediately so you don’t redo this step
+saveRDS(tile_dt, "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run/logs/tile_dt_headers.rds")
+
+# --- sanity: bad extents ---
+bad_extent <- tile_dt[ok == TRUE & (xmax <= xmin | ymax <= ymin | is.na(xmin) | is.na(ymin))]
+nrow(bad_extent)
+# Optional: save a list of problematic files
+if (nrow(bad_extent) > 0) {
+  writeLines(bad_extent$file, "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run/logs/bad_extent_files.txt")
+}
+
+# --- build polygons only for good headers ---
+tile_ok <- tile_dt[ok == TRUE]
+
+tile_sf <- st_as_sf(tile_ok, coords = c("xmin","ymin"), crs = crs_lidar) # dummy
+tile_sf$geometry <- st_sfc(lapply(seq_len(nrow(tile_ok)), function(i) {
+  st_polygon(list(matrix(
+    c(tile_ok$xmin[i], tile_ok$ymin[i],
+      tile_ok$xmax[i], tile_ok$ymin[i],
+      tile_ok$xmax[i], tile_ok$ymax[i],
+      tile_ok$xmin[i], tile_ok$ymax[i],
+      tile_ok$xmin[i], tile_ok$ymin[i]),
+    ncol = 2, byrow = TRUE
+  )))
+}), crs = crs_lidar)
+
+# --- sanity: CRS match ---
+stopifnot(st_crs(tile_sf) == st_crs(study_union))
+
+# --- intersects ---
+hits <- st_intersects(tile_sf, study_union, sparse = FALSE)[, 1]
+keep_files <- tile_sf$file[hits]
+
+length(tile_files)
+length(keep_files)
+
+# Save keep list for tomorrow
+saveRDS(keep_files, "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run/logs/keep_files.rds")
+writeLines(keep_files, "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run/logs/keep_files.txt")
+```
+
+
+```{r}
+keep_files <- readRDS("R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run/logs/keep_files.rds")
+
+```
 
