@@ -724,6 +724,8 @@ CSF with the current parameters in the algorithm appear to be the best for our d
 
 Now that our point cloud has had the ground classified. We can create a Digital Elevation Model by interpolating the points which will help us as we make the normalized canopy height model.
 
+** Note when making HSM it will likely be better to aggregate up to 5m or 10m for rasters. **
+
 ```{r Generate DEM, Slope, Aspect from Ground Classification - Center Boundary Box 500m}
 
 ############ Get the Files Prepped #########
@@ -872,7 +874,7 @@ catalog_apply(ctg_csf_500, norm_fun)
 
 # Create a directory to save the files
 
-chm_dir <- "Output_Files/Filter_Chunks/chm_csf_res2m/"
+chm_dir <- "Output_Files/Filter_Chunks/chm_csf_res1m/"
 dir.create(chm_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Create a catalog of the normalized point cloud
@@ -909,7 +911,26 @@ catalog_apply(ctg_500_norm, chm_fun)
 ```{r Generate Understory and Complexity - Center Boundary Box 500m}
 
 ###### Understory Metrics ##########
+# Folder containing normalized point clouds
+norm_dir <- "Output_Files/Filter_Chunks/norm_csf/"
 
+# List ALL normalized LAS/LAZ files
+norm_files <- list.files(
+  norm_dir,
+  pattern = "\\.(las|laz)$",  # important: you have .las files, not .laz
+  full.names = TRUE
+)
+
+# Check what was found (very important QA step)
+norm_files
+
+# Create the catalog (this does NOT load points into RAM)
+ctg_500_norm <- readLAScatalog(norm_files)
+
+# Inspect catalog
+ctg_500_norm
+
+# Create Understory Directory
 under_dir <- "Output_Files/Filter_Chunks/understory_res10m/"
 dir.create(under_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -917,48 +938,64 @@ opt_chunk_size(ctg_500_norm) <- 0
 opt_chunk_buffer(ctg_500_norm) <- 0
 lidR::set_lidr_threads(1)
 
-understory_fun <- function(cluster, ...) {
-  las <- readLAS(cluster)
-  if (is.empty(las)) return(NULL)
+res <- 10
+cell_area <- res * res
 
-  # A clean base name for outputs (no extension)
-  base <- tools::file_path_sans_ext(basename(cluster@files))
+files <- ctg_500_norm@data$filename
 
-  # 1) total point density (all points)
-  total_density <- rasterize_density(las, res = 10)
+for (f in files) {
+  las <- readLAS(f)
+  if (is.empty(las)) {
+    message("SKIP empty file: ", basename(f))
+    next
+  }
 
-  # 2) understory points: non-ground and < 2m above ground
-  understory_points <- filter_poi(las, Classification != 2L & Z < 2)
+  base <- tools::file_path_sans_ext(basename(f))
+  message("Processing: ", base, " | npoints=", npoints(las))
 
-  understory_density <- rasterize_density(understory_points, res = 10)
+  # total count per cell -> density
+  total_count <- pixel_metrics(las, ~length(Z), res = res)
+  if (ncell(total_count) == 0 || all(is.na(values(total_count)))) {
+    message("  SKIP: total_count empty/NA for ", base)
+    next
+  }
+  total_density <- total_count / cell_area
 
-  # 3) percent understory (avoid divide-by-zero)
-  percent_under <- understory_density / total_density
-  percent_under[is.infinite(percent_under)] <- NA
-  percent_under[is.nan(percent_under)] <- NA
+  # understory points
+  under_pts <- filter_poi(las, Classification != 2L & Z < 2)
+  if (is.empty(under_pts)) {
+    under_density <- total_density; values(under_density) <- 0
+    pct_under <- total_density; values(pct_under) <- 0
+  } else {
+    under_count <- pixel_metrics(under_pts, ~length(Z), res = res)
 
-  # Write three separate GeoTIFFs
-  writeRaster(rast(total_density),
-              filename = file.path(under_dir, paste0(base, "_dens_total_10m.tif")),
+    # align grids if needed
+    if (!compareGeom(total_count, under_count, stopOnError = FALSE)) {
+      under_count <- resample(under_count, total_count, method = "near")
+    }
+
+    under_density <- under_count / cell_area
+    pct_under <- under_density / total_density
+    pct_under[!is.finite(pct_under)] <- NA
+  }
+
+  writeRaster(total_density,
+              file.path(under_dir, paste0(base, "_dens_total_", res, "m.tif")),
+              overwrite = TRUE)
+  writeRaster(under_density,
+              file.path(under_dir, paste0(base, "_dens_under_0to2m_", res, "m.tif")),
+              overwrite = TRUE)
+  writeRaster(pct_under,
+              file.path(under_dir, paste0(base, "_pct_under_0to2m_", res, "m.tif")),
               overwrite = TRUE)
 
-  writeRaster(rast(understory_density),
-              filename = file.path(under_dir, paste0(base, "_dens_under_0to2m_10m.tif")),
-              overwrite = TRUE)
-
-  writeRaster(rast(percent_under),
-              filename = file.path(under_dir, paste0(base, "_pct_under_0to2m_10m.tif")),
-              overwrite = TRUE)
-
-  NULL
+  message("  WROTE rasters for: ", base)
 }
-
-catalog_apply(ctg_500_norm, understory_fun)
 
 
 ###### Complexity #######
 
-complex_dir <- "Output_Files/Filter_Chunks/complexity_res10m/"
+complex_dir <- "Output_Files/Filter_Chunks/complexity_res1m/"
 dir.create(complex_dir, showWarnings = FALSE, recursive = TRUE)
 
 complex_fun <- function(cluster, ...) {
@@ -968,8 +1005,8 @@ complex_fun <- function(cluster, ...) {
   # Use normalized heights; remove ground if you want canopy-only complexity:
   las_can <- filter_poi(las, Classification != 2L & Z > 0)
 
-  # coefficient of variation of heights in each 10m pixel
-  comp <- pixel_metrics(las_can, ~ sd(Z) / mean(Z), res = 10)
+  # coefficient of variation of heights in each 1m pixel
+  comp <- pixel_metrics(las_can, ~ sd(Z) / mean(Z), res = 1)
 
   comp
 }
