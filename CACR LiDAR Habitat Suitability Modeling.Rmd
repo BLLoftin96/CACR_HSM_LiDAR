@@ -1752,14 +1752,6 @@ lidR::opt_output_files(ctg_norm_utm12) <- file.path(
 
 lidR::catalog_apply(ctg_norm_utm12, complex_fun)
 
-########## COMPLEXITY RUN: UTM 12 ##########
-
-lidR::opt_output_files(ctg_norm_utm12) <- file.path(
-  complexity_res1m_utm12_dir,
-  "{ORIGINALFILENAME}_complexity.tif"
-)
-
-lidR::catalog_apply(ctg_norm_utm12, complex_fun)
 
 #### 12) FINAL QA: PRINT WHERE OUTPUTS WERE SAVED         ####
 
