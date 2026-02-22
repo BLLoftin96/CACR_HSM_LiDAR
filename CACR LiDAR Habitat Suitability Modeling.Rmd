@@ -80,6 +80,7 @@ install.packages('future')
 install.packages('future.apply')
 install.packages('progressr')
 install.packages('data.table')
+install.packages("stringr")
 
 # Load
 library(lidR)
@@ -92,6 +93,7 @@ library(future)
 library(future.apply)
 library(progressr)
 library(data.table)
+library(stringr)
 ```
 
 # Data Inspection
@@ -1016,6 +1018,759 @@ catalog_apply(ctg_500_norm, complex_fun)
 
 ### If you prefer complexity that includes all points (including ground), remove the filter_poi() line — but for vegetation structure metrics, canopy-only is usually more meaningful.
 ```
+
+Looking at QGIS I noticed some descrepancies where some tiles appear in random locations well outside the study area.
+
+# Bug Fix
+
+```{r Check QGIS Descrepancy}
+########## PRESERVE ORIGINAL FILE LIST (DO NOT OVERWRITE) ##########
+
+roi_filtered_directory_path <- "Output_Files/Filter_Chunks/"
+
+# Identify ONLY the 500m ROI clips created earlier in the pipeline
+roi_filtered_clip_file_paths <- list.files(
+  path = roi_filtered_directory_path,
+  pattern = "_center500_filtered\\.laz$",  # strict match to your naming scheme
+  full.names = TRUE
+)
+
+# Sanity check: ensure files were found
+stopifnot(length(roi_filtered_clip_file_paths) > 0)
+
+########## FUNCTION: EXTRACT CRS WKT FROM LAS HEADER (MEMORY SAFE) ##########
+# This reads ONLY metadata, not the full point cloud
+
+extract_crs_wkt_from_las_header <- function(single_laz_file_path) {
+  
+  # Read LAS header only (very low RAM usage)
+  las_header_object <- lidR::readLASheader(single_laz_file_path)
+  
+  # Extract CRS as WKT (most reliable identifier across flights)
+  crs_wkt_value <- sf::st_crs(las_header_object)$wkt
+  
+  # Return NA if CRS is missing
+  if (is.null(crs_wkt_value) || is.na(crs_wkt_value)) {
+    return(NA_character_)
+  }
+  
+  return(crs_wkt_value)
+}
+
+########## BUILD DETAILED CRS AUDIT TABLE ##########
+
+roi_clip_crs_audit_table <- data.table(
+  roi_clip_file_path = roi_filtered_clip_file_paths
+)
+
+# Extract CRS WKT for each ROI clip (no point cloud loading)
+roi_clip_crs_audit_table[
+  , crs_wkt := vapply(
+    roi_clip_file_path,
+    extract_crs_wkt_from_las_header,
+    character(1)
+  )
+]
+
+########## SUMMARIZE DISTINCT CRS GROUPS ##########
+# This will reveal if LAZ + SouthernIdaho2018_14_LAZ are in a different CRS
+
+roi_clip_crs_summary_table <- roi_clip_crs_audit_table[
+  , .(number_of_files = .N),
+  by = crs_wkt
+][order(-number_of_files)]
+
+# Print clear diagnostic output
+roi_clip_crs_summary_table
+
+########## INPUT: ROI CLIPS CREATED BY YOUR FILTER STEP ##########
+
+roi_filtered_directory_path <- "Output_Files/Filter_Chunks/"
+
+roi_filtered_clip_file_paths <- list.files(
+  path = roi_filtered_directory_path,
+  pattern = "_center500_filtered\\.laz$",
+  full.names = TRUE
+)
+
+stopifnot(length(roi_filtered_clip_file_paths) > 0)
+
+########## FUNCTION: EXTRACT HEADER CRS WKT (MEMORY SAFE) ##########
+
+extract_crs_wkt_from_las_header <- function(single_laz_file_path) {
+  las_header_object <- lidR::readLASheader(single_laz_file_path)
+  crs_wkt_value <- sf::st_crs(las_header_object)$wkt
+  if (is.null(crs_wkt_value) || is.na(crs_wkt_value)) return(NA_character_)
+  crs_wkt_value
+}
+
+########## BUILD AUDIT TABLE ##########
+
+roi_clip_crs_audit_table <- data.table(
+  roi_clip_file_path = roi_filtered_clip_file_paths
+)
+
+roi_clip_crs_audit_table[
+  , crs_wkt := vapply(
+    roi_clip_file_path,
+    extract_crs_wkt_from_las_header,
+    character(1)
+  )
+]
+
+# Parse UTM zone from the WKT text (works for your three CRS strings)
+roi_clip_crs_audit_table[
+  , utm_zone := fifelse(
+    str_detect(crs_wkt, "UTM zone 11N"), "11N",
+    fifelse(str_detect(crs_wkt, "UTM zone 12N"), "12N", NA_character_)
+  )
+]
+
+# Parse geoid model from WKT (Geoid12B vs Geoid18)
+roi_clip_crs_audit_table[
+  , geoid_model := fifelse(
+    str_detect(crs_wkt, "GEOID12B"), "GEOID12B",
+    fifelse(str_detect(crs_wkt, "GEOID18"), "GEOID18", NA_character_)
+  )
+]
+
+# Helpful filename column for reading output
+roi_clip_crs_audit_table[
+  , roi_clip_base_name := tools::file_path_sans_ext(basename(roi_clip_file_path))
+]
+
+roi_clip_crs_audit_table[, .(roi_clip_base_name, utm_zone, geoid_model)]
+
+########## DEFINE SEPARATE OUTPUT ROOTS (VERY IMPORTANT) ##########
+
+output_root_directory <- "Output_Files/Filter_Chunks/"
+
+ground_csf_utm11_dir <- file.path(output_root_directory, "ground_csf_utm11")
+ground_csf_utm12_dir <- file.path(output_root_directory, "ground_csf_utm12")
+
+dir.create(ground_csf_utm11_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(ground_csf_utm12_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+We will need to rerun this. 
+
+```{r Fix Bugs}
+
+#### 1) INPUTS YOU ALREADY CREATED (VERIFY THEY EXIST) AND MAKE FILE PATHS     ####
+
+# Assumes these already exist in your environment from your audit step:
+# - roi_clip_crs_audit_table with columns:
+#     roi_clip_file_path, crs_wkt, utm_zone, geoid_model, roi_clip_base_name
+# - output_root_directory <- "Output_Files/Filter_Chunks/"
+# - ground_csf_utm11_dir, ground_csf_utm12_dir already created
+
+stopifnot(exists("roi_clip_crs_audit_table"))
+stopifnot(exists("output_root_directory"))
+stopifnot(exists("ground_csf_utm11_dir"))
+stopifnot(exists("ground_csf_utm12_dir"))
+
+stopifnot(dir.exists(output_root_directory))
+stopifnot(dir.exists(ground_csf_utm11_dir))
+stopifnot(dir.exists(ground_csf_utm12_dir))
+
+# Extract ROI clip paths by UTM zone (these are your filtered 500m ROI files)
+roi_filtered_clip_paths_utm11 <- roi_clip_crs_audit_table[utm_zone == "11N", roi_clip_file_path]
+roi_filtered_clip_paths_utm12 <- roi_clip_crs_audit_table[utm_zone == "12N", roi_clip_file_path]
+
+stopifnot(length(roi_filtered_clip_paths_utm11) > 0)
+stopifnot(length(roi_filtered_clip_paths_utm12) > 0)
+
+# A single folder per CRS that contains everything.
+
+metrics_utm11_root_dir <- file.path(output_root_directory, "metrics_utm11")
+metrics_utm12_root_dir <- file.path(output_root_directory, "metrics_utm12")
+
+dir.create(metrics_utm11_root_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(metrics_utm12_root_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Within each parent, create standardized subfolders
+create_metrics_subfolders <- function(metrics_root_dir) {
+
+  subfolder_list <- list(
+    ground_csf   = file.path(metrics_root_dir, "ground_csf"),
+    dtm_res1m    = file.path(metrics_root_dir, "dtm_res1m"),
+    slope_res1m  = file.path(metrics_root_dir, "slope_res1m"),
+    aspect_res1m = file.path(metrics_root_dir, "aspect_res1m"),
+    norm_csf     = file.path(metrics_root_dir, "norm_csf"),
+    chm_res1m    = file.path(metrics_root_dir, "chm_res1m"),
+    understory_10m = file.path(metrics_root_dir, "understory_res10m"),
+    complexity_res1m = file.path(metrics_root_dir, "complexity_res1m")
+  )
+
+  # Create each directory on disk
+  for (single_dir in subfolder_list) {
+    dir.create(single_dir, showWarnings = FALSE, recursive = TRUE)
+  }
+
+  return(subfolder_list)
+}
+
+utm11_dirs <- create_metrics_subfolders(metrics_utm11_root_dir)
+utm12_dirs <- create_metrics_subfolders(metrics_utm12_root_dir)
+
+# Print for QA so you can SEE where stuff will go
+print(utm11_dirs)
+print(utm12_dirs)
+
+#### 2) BUILD CRS-CLEAN ROI CATALOGS      ####
+
+# These catalogs point to the already-filtered ROI clips on disk.
+# They do NOT create any new files by themselves.
+
+ctg_roi_filtered_utm11 <- lidR::readLAScatalog(roi_filtered_clip_paths_utm11)
+ctg_roi_filtered_utm12 <- lidR::readLAScatalog(roi_filtered_clip_paths_utm12)
+
+# Process by file: chunk_size=0 means each file is processed independently
+lidR::opt_chunk_size(ctg_roi_filtered_utm11) <- 0
+lidR::opt_chunk_buffer(ctg_roi_filtered_utm11) <- 0
+
+lidR::opt_chunk_size(ctg_roi_filtered_utm12) <- 0
+lidR::opt_chunk_buffer(ctg_roi_filtered_utm12) <- 0
+
+lidR::set_lidr_threads(1)
+
+# Optional: print summaries for QA
+ctg_roi_filtered_utm11
+ctg_roi_filtered_utm12
+
+#### 3) CSF GROUND CLASSIFICATION (BOTH) ####
+
+# This step creates NEW files on disk:
+# - Output_Files/Filter_Chunks/ground_csf_utm11/*_csf.laz
+# - Output_Files/Filter_Chunks/ground_csf_utm12/*_csf.laz
+
+csf_algorithm_object <- lidR::csf(
+  sloop_smooth = TRUE,
+  class_threshold = 0.5,
+  cloth_resolution = 0.5,
+  rigidness = 2
+)
+
+########## CSF RUN: UTM 11 ##########
+
+lidR::opt_output_files(ctg_roi_filtered_utm11) <- file.path(
+  utm11_dirs$ground_csf,
+  "{ORIGINALFILENAME}_csf.laz"
+)
+
+lidR::catalog_apply(ctg_roi_filtered_utm11, function(cluster) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  las_object <- lidR::classify_ground(las_object, csf_algorithm_object)
+
+  las_object
+})
+
+########## CSF RUN: UTM 12 ##########
+
+lidR::opt_output_files(ctg_roi_filtered_utm12) <- file.path(
+  utm12_dirs$ground_csf,
+  "{ORIGINALFILENAME}_csf.laz"
+)
+
+lidR::catalog_apply(ctg_roi_filtered_utm12, function(cluster) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  las_object <- lidR::classify_ground(las_object, csf_algorithm_object)
+
+  las_object
+})
+
+
+########## FIX: DO NOT INCLUDE .las/.laz EXTENSION ##########
+
+lidR::opt_output_files(ctg_roi_filtered_utm11) <- file.path(
+  utm11_dirs$ground_csf,
+  "{ORIGINALFILENAME}_csf"
+)
+
+lidR::opt_output_files(ctg_roi_filtered_utm12) <- file.path(
+  utm12_dirs$ground_csf,
+  "{ORIGINALFILENAME}_csf"
+)
+
+########## FIX: MATCH ANY LAS/LAZ EXTENSION ##########
+
+csf_output_paths_utm11 <- list.files(
+  utm11_dirs$ground_csf,
+  pattern = "_csf\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+csf_output_paths_utm12 <- list.files(
+  utm12_dirs$ground_csf,
+  pattern = "_csf\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+# If your accidental files are still ".laz.las", match them too:
+if (length(csf_output_paths_utm11) == 0) {
+  csf_output_paths_utm11 <- list.files(
+    utm11_dirs$ground_csf,
+    pattern = "_csf\\.laz\\.las$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+}
+
+if (length(csf_output_paths_utm12) == 0) {
+  csf_output_paths_utm12 <- list.files(
+    utm12_dirs$ground_csf,
+    pattern = "_csf\\.laz\\.las$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+}
+
+stopifnot(length(csf_output_paths_utm11) > 0)
+stopifnot(length(csf_output_paths_utm12) > 0)
+
+########## OPTIONAL CLEANUP: RENAME *.laz.las -> *.las ##########
+
+rename_laz_las_double_extension <- function(folder_path) {
+
+  double_extension_file_paths <- list.files(
+    folder_path,
+    pattern = "\\.laz\\.las$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  if (length(double_extension_file_paths) == 0) return(invisible(NULL))
+
+  for (old_path in double_extension_file_paths) {
+
+    new_path <- sub("\\.laz\\.las$", ".las", old_path, ignore.case = TRUE)
+
+    # Do not overwrite anything accidentally
+    if (file.exists(new_path)) next
+
+    file.rename(from = old_path, to = new_path)
+  }
+}
+
+rename_laz_las_double_extension(utm11_dirs$ground_csf)
+rename_laz_las_double_extension(utm12_dirs$ground_csf)
+
+csf_output_paths_utm11 <- list.files(utm11_dirs$ground_csf, pattern = "_csf\\.(las|laz)$", full.names = TRUE, ignore.case = TRUE)
+csf_output_paths_utm12 <- list.files(utm12_dirs$ground_csf, pattern = "_csf\\.(las|laz)$", full.names = TRUE, ignore.case = TRUE)
+
+# Check 
+list.files(utm11_dirs$ground_csf)
+
+#### 4) BUILD CATALOGS FROM CSF OUTPUTS (BOTH)        ####
+
+
+csf_output_paths_utm11 <- list.files(
+  utm11_dirs$ground_csf,
+  pattern = "_csf\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+csf_output_paths_utm12 <- list.files(
+  utm12_dirs$ground_csf,
+  pattern = "_csf\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+stopifnot(length(csf_output_paths_utm11) > 0)
+stopifnot(length(csf_output_paths_utm12) > 0)
+
+ctg_csf_utm11 <- lidR::readLAScatalog(csf_output_paths_utm11)
+ctg_csf_utm12 <- lidR::readLAScatalog(csf_output_paths_utm12)
+
+lidR::opt_chunk_size(ctg_csf_utm11) <- 0
+lidR::opt_chunk_buffer(ctg_csf_utm11) <- 0
+
+lidR::opt_chunk_size(ctg_csf_utm12) <- 0
+lidR::opt_chunk_buffer(ctg_csf_utm12) <- 0
+
+lidR::set_lidr_threads(1)
+
+#### 5) DTM (1m) FOR UTM11 AND UTM12      ####
+# Outputs:
+# - Output_Files/Filter_Chunks/dtm_res1m_utm11/*_dtm.tif
+# - Output_Files/Filter_Chunks/dtm_res1m_utm12/*_dtm.tif
+
+dtm_fun <- function(cluster, ...) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  # Skip if there are no ground points
+  if (!any(las_object@data$Classification == 2L)) return(NULL)
+
+  dtm_raster <- lidR::rasterize_terrain(
+    las_object,
+    res = 1,
+    algorithm = lidR::tin()
+  )
+
+  return(dtm_raster)
+}
+
+########## DTM: UTM11 ##########
+
+lidR::opt_output_files(ctg_csf_utm11) <- file.path(
+  utm11_dirs$dtm_res1m,
+  "{ORIGINALFILENAME}_dtm"
+)
+
+lidR::catalog_apply(ctg_csf_utm11, dtm_fun)
+
+########## DTM: UTM12 ##########
+
+lidR::opt_output_files(ctg_csf_utm12) <- file.path(
+  utm12_dirs$dtm_res1m,
+  "{ORIGINALFILENAME}_dtm"
+)
+
+lidR::catalog_apply(ctg_csf_utm12, dtm_fun)
+
+#### 6) SLOPE + ASPECT FROM DTM (BOTH)    ####
+
+# Outputs:
+# - slope_res1m_utm11/*_slope.tif
+# - aspect_res1m_utm11/*_aspect.tif
+# - slope_res1m_utm12/*_slope.tif
+# - aspect_res1m_utm12/*_aspect.tif
+
+dtm_paths_utm11 <- list.files(
+  utm11_dirs$dtm_res1m,
+  pattern = "_dtm\\.(tif|grd)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+dtm_paths_utm12 <- list.files(
+  utm12_dirs$dtm_res1m,
+  pattern = "_dtm\\.(tif|grd)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+stopifnot(length(dtm_paths_utm11) > 0)
+stopifnot(length(dtm_paths_utm12) > 0)
+
+########## SLOPE/ASPECT: UTM11 ##########
+
+for (single_dtm_path in dtm_paths_utm11) {
+
+  dtm_rast <- terra::rast(single_dtm_path)
+
+  slope_rast  <- terra::terrain(dtm_rast, v = "slope", unit = "degrees")
+  aspect_rast <- terra::terrain(dtm_rast, v = "aspect", unit = "degrees")
+
+  base_name <- tools::file_path_sans_ext(basename(single_dtm_path))
+
+  terra::writeRaster(
+    slope_rast,
+    filename = file.path(utm11_dirs$slope_res1m, paste0(base_name, "_slope.tif")),
+    overwrite = TRUE
+  )
+
+  terra::writeRaster(
+    aspect_rast,
+    filename = file.path(utm11_dirs$aspect_res1m, paste0(base_name, "_aspect.tif")),
+    overwrite = TRUE
+  )
+}
+
+########## SLOPE/ASPECT: UTM12 ##########
+
+for (single_dtm_path in dtm_paths_utm12) {
+
+  dtm_rast <- terra::rast(single_dtm_path)
+
+  slope_rast  <- terra::terrain(dtm_rast, v = "slope", unit = "degrees")
+  aspect_rast <- terra::terrain(dtm_rast, v = "aspect", unit = "degrees")
+
+  base_name <- tools::file_path_sans_ext(basename(single_dtm_path))
+
+  terra::writeRaster(
+    slope_rast,
+    filename = file.path(utm12_dirs$slope_res1m, paste0(base_name, "_slope.tif")),
+    overwrite = TRUE
+  )
+
+  terra::writeRaster(
+    aspect_rast,
+    filename = file.path(utm12_dirs$aspect_res1m, paste0(base_name, "_aspect.tif")),
+    overwrite = TRUE
+  )
+}
+
+#### 7) NORMALIZE HEIGHT (BOTH)            ####
+
+# Outputs:
+# - norm_csf_utm11/*_norm.laz
+# - norm_csf_utm12/*_norm.laz
+
+norm_fun <- function(cluster, ...) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  if (!any(las_object@data$Classification == 2L)) return(NULL)
+
+  normalized_las_object <- lidR::normalize_height(las_object, lidR::tin())
+
+  return(normalized_las_object)
+}
+
+########## NORMALIZE: UTM11 ##########
+
+lidR::opt_output_files(ctg_csf_utm11) <- file.path(
+  utm11_dirs$norm_csf,
+  "{ORIGINALFILENAME}_norm"
+)
+
+lidR::catalog_apply(ctg_csf_utm11, norm_fun)
+
+########## NORMALIZE: UTM12 ##########
+
+lidR::opt_output_files(ctg_csf_utm12) <- file.path(
+  utm12_dirs$norm_csf,
+  "{ORIGINALFILENAME}_norm"
+)
+
+lidR::catalog_apply(ctg_csf_utm12, norm_fun)
+
+#### 8) BUILD NORMALIZED CATALOGS (BOTH)             ####
+
+norm_paths_utm11 <- list.files(
+  utm11_dirs$norm_csf,
+  pattern = "_norm\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+norm_paths_utm12 <- list.files(
+  utm12_dirs$norm_csf,
+  pattern = "_norm\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+stopifnot(length(norm_paths_utm11) > 0)
+stopifnot(length(norm_paths_utm12) > 0)
+
+ctg_norm_utm11 <- lidR::readLAScatalog(norm_paths_utm11)
+ctg_norm_utm12 <- lidR::readLAScatalog(norm_paths_utm12)
+
+lidR::opt_chunk_size(ctg_norm_utm11) <- 0
+lidR::opt_chunk_buffer(ctg_norm_utm11) <- 0
+
+lidR::opt_chunk_size(ctg_norm_utm12) <- 0
+lidR::opt_chunk_buffer(ctg_norm_utm12) <- 0
+
+lidR::set_lidr_threads(1)
+
+#### 9) CHM (1m) (BOTH)                      ####
+
+# Outputs:
+# - chm_res1m_utm11/*_chm.tif
+# - chm_res1m_utm12/*_chm.tif
+
+chm_fun <- function(cluster, ...) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  chm_raster <- lidR::rasterize_canopy(
+    las_object,
+    res = 1,
+    algorithm = lidR::pitfree(c(0,2,5,10,15,20,25), subcircle = 0.2)
+  )
+
+  return(chm_raster)
+}
+
+########## CHM: UTM11 ##########
+
+lidR::opt_output_files(ctg_norm_utm11) <- file.path(
+  utm11_dirs$chm_res1m,
+  "{ORIGINALFILENAME}_chm"
+)
+
+lidR::catalog_apply(ctg_norm_utm11, chm_fun)
+
+########## CHM: UTM12 ##########
+
+lidR::opt_output_files(ctg_norm_utm12) <- file.path(
+  utm12_dirs$chm_res1m,
+  "{ORIGINALFILENAME}_chm"
+)
+
+lidR::catalog_apply(ctg_norm_utm12, chm_fun)
+
+#### 10) UNDERSTORY METRICS (10m) (BOTH)   ####
+
+# Outputs:
+# - understory_res10m_utm11/*_dens_* and *_pct_*
+# - understory_res10m_utm12/*_dens_* and *_pct_*
+
+understory_res_m <- 10
+understory_cell_area_m2 <- understory_res_m * understory_res_m
+
+utm11_norm_files_for_loop <- ctg_norm_utm11@data$filename
+utm12_norm_files_for_loop <- ctg_norm_utm12@data$filename
+
+########## UNDERSTORY: UTM11 ##########
+
+for (single_norm_path in utm11_norm_files_for_loop) {
+
+  las_object <- lidR::readLAS(single_norm_path)
+  if (lidR::is.empty(las_object)) next
+
+  base_name <- tools::file_path_sans_ext(basename(single_norm_path))
+
+  total_count <- lidR::pixel_metrics(las_object, ~length(Z), res = understory_res_m)
+  if (terra::ncell(total_count) == 0 || all(is.na(terra::values(total_count)))) next
+  total_density <- total_count / understory_cell_area_m2
+
+  under_pts <- lidR::filter_poi(las_object, Classification != 2L & Z < 2)
+
+  if (lidR::is.empty(under_pts)) {
+    under_density <- total_density; terra::values(under_density) <- 0
+    pct_under <- total_density; terra::values(pct_under) <- 0
+  } else {
+    under_count <- lidR::pixel_metrics(under_pts, ~length(Z), res = understory_res_m)
+
+    if (!terra::compareGeom(total_count, under_count, stopOnError = FALSE)) {
+      under_count <- terra::resample(under_count, total_count, method = "near")
+    }
+
+    under_density <- under_count / understory_cell_area_m2
+    pct_under <- under_density / total_density
+    pct_under[!is.finite(pct_under)] <- NA
+  }
+
+  terra::writeRaster(total_density,
+                     filename = file.path(utm11_dirs$understory_10m, paste0(base_name, "_dens_total_10m.tif")),
+                     overwrite = TRUE)
+
+  terra::writeRaster(under_density,
+                     filename = file.path(utm11_dirs$understory_10m, paste0(base_name, "_dens_under_0to2m_10m.tif")),
+                     overwrite = TRUE)
+
+  terra::writeRaster(pct_under,
+                     filename = file.path(utm11_dirs$understory_10m, paste0(base_name, "_pct_under_0to2m_10m.tif")),
+                     overwrite = TRUE)
+}
+
+########## UNDERSTORY: UTM12 ##########
+
+for (single_norm_path in utm12_norm_files_for_loop) {
+
+  las_object <- lidR::readLAS(single_norm_path)
+  if (lidR::is.empty(las_object)) next
+
+  base_name <- tools::file_path_sans_ext(basename(single_norm_path))
+
+  total_count <- lidR::pixel_metrics(las_object, ~length(Z), res = understory_res_m)
+  if (terra::ncell(total_count) == 0 || all(is.na(terra::values(total_count)))) next
+  total_density <- total_count / understory_cell_area_m2
+
+  under_pts <- lidR::filter_poi(las_object, Classification != 2L & Z < 2)
+
+  if (lidR::is.empty(under_pts)) {
+    under_density <- total_density; terra::values(under_density) <- 0
+    pct_under <- total_density; terra::values(pct_under) <- 0
+  } else {
+    under_count <- lidR::pixel_metrics(under_pts, ~length(Z), res = understory_res_m)
+
+    if (!terra::compareGeom(total_count, under_count, stopOnError = FALSE)) {
+      under_count <- terra::resample(under_count, total_count, method = "near")
+    }
+
+    under_density <- under_count / understory_cell_area_m2
+    pct_under <- under_density / total_density
+    pct_under[!is.finite(pct_under)] <- NA
+  }
+
+  terra::writeRaster(total_density,
+                     filename = file.path(utm12_dirs$understory_10m, paste0(base_name, "_dens_total_10m.tif")),
+                     overwrite = TRUE)
+
+  terra::writeRaster(under_density,
+                     filename = file.path(utm12_dirs$understory_10m, paste0(base_name, "_dens_under_0to2m_10m.tif")),
+                     overwrite = TRUE)
+
+  terra::writeRaster(pct_under,
+                     filename = file.path(utm12_dirs$understory_10m, paste0(base_name, "_pct_under_0to2m_10m.tif")),
+                     overwrite = TRUE)
+}
+
+
+#### 11) COMPLEXITY (1m) (BOTH)           ####
+
+# Outputs:
+# - complexity_res1m_utm11/*_complexity.tif
+# - complexity_res1m_utm12/*_complexity.tif
+
+complex_fun <- function(cluster, ...) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  las_canopy_only <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
+
+  complexity_raster <- lidR::pixel_metrics(las_canopy_only, ~ sd(Z) / mean(Z), res = 1)
+
+  return(complexity_raster)
+}
+
+########## COMPLEXITY: UTM11 ##########
+
+lidR::opt_output_files(ctg_norm_utm11) <- file.path(
+  utm11_dirs$complexity_res1m,
+  "{ORIGINALFILENAME}_complexity"
+)
+
+lidR::catalog_apply(ctg_norm_utm11, complex_fun)
+
+########## COMPLEXITY: UTM12 ##########
+
+lidR::opt_output_files(ctg_norm_utm12) <- file.path(
+  utm12_dirs$complexity_res1m,
+  "{ORIGINALFILENAME}_complexity"
+)
+
+lidR::catalog_apply(ctg_norm_utm12, complex_fun)
+
+########## COMPLEXITY RUN: UTM 12 ##########
+
+lidR::opt_output_files(ctg_norm_utm12) <- file.path(
+  complexity_res1m_utm12_dir,
+  "{ORIGINALFILENAME}_complexity.tif"
+)
+
+lidR::catalog_apply(ctg_norm_utm12, complex_fun)
+
+#### 12) FINAL QA: PRINT WHERE OUTPUTS WERE SAVED         ####
+
+cat("\nDONE.\n")
+cat("All UTM11 outputs saved under: ", metrics_utm11_root_dir, "\n")
+cat("All UTM12 outputs saved under: ", metrics_utm12_root_dir, "\n")
+
+cat("\nUTM11 subfolders:\n"); print(utm11_dirs)
+cat("\nUTM12 subfolders:\n"); print(utm12_dirs)
+```
+
 
 # Check Pipeline on Full Tiles
 
