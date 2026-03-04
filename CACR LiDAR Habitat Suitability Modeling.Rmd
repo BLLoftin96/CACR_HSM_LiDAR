@@ -2899,5 +2899,269 @@ We now have the South Hills and Albions as separate files containing their own f
 
 ```{r Full Area - Classification}
 
+##### 0) Define directories FIRST #####
+
+# Albion (assumes albion_run_root_directory + albion_filtered_output_directory already exist in your session)
+albion_ground_output_directory <- file.path(albion_run_root_directory, "02_ground_csf")
+albion_log_directory           <- file.path(albion_run_root_directory, "logs")
+
+# South Hills
+southhills_run_root_directory        <- "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run"
+southhills_filtered_output_directory <- file.path(southhills_run_root_directory, "01_filtered")
+southhills_ground_output_directory   <- file.path(southhills_run_root_directory, "02_ground_csf")
+southhills_log_directory             <- file.path(southhills_run_root_directory, "logs")
+
+dir.create(albion_ground_output_directory,     recursive = TRUE, showWarnings = FALSE)
+dir.create(albion_log_directory,               recursive = TRUE, showWarnings = FALSE)
+dir.create(southhills_ground_output_directory, recursive = TRUE, showWarnings = FALSE)
+dir.create(southhills_log_directory,           recursive = TRUE, showWarnings = FALSE)
+
+
+##### 1) Pre-Classification Checks #####
+
+albion_filtered_files <- list.files(
+  albion_filtered_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+southhills_filtered_files <- list.files(
+  southhills_filtered_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+stopifnot(length(albion_filtered_files) > 0)
+stopifnot(length(southhills_filtered_files) > 0)
+
+stopifnot(all(file.exists(albion_filtered_files)))
+stopifnot(all(file.exists(southhills_filtered_files)))
+
+header_ok <- function(f) {
+  h <- try(lidR::readLASheader(f), silent = TRUE)
+  !inherits(h, "try-error")
+}
+
+stopifnot(all(vapply(albion_filtered_files[1:min(10, length(albion_filtered_files))], header_ok, logical(1))))
+stopifnot(all(vapply(southhills_filtered_files[1:min(10, length(southhills_filtered_files))], header_ok, logical(1))))
+
+cat("Albion existing CSF outputs:",
+    length(list.files(albion_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n")
+cat("South Hills existing CSF outputs:",
+    length(list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n")
+
+
+##### 2) Define CSF algorithm object #####
+
+csf_ground_fullArea <- lidR::csf(
+  sloop_smooth     = TRUE,
+  class_threshold  = 0.5,
+  cloth_resolution = 0.5,
+  rigidness        = 2
+)
+
+
+##### 3) Study area run list #####
+
+study_area_run_list <- list(
+  list(
+    study_area_name = "Albion",
+    filtered_dir    = albion_filtered_output_directory,
+    ground_dir      = albion_ground_output_directory,
+    log_dir         = albion_log_directory
+  ),
+  list(
+    study_area_name = "SouthHills",
+    filtered_dir    = southhills_filtered_output_directory,
+    ground_dir      = southhills_ground_output_directory,
+    log_dir         = southhills_log_directory
+  )
+)
+
+
+##### 4) Helper: list filtered tiles #####
+
+list_filtered_tile_paths <- function(filtered_directory_path) {
+  list.files(
+    path = filtered_directory_path,
+    pattern = "\\.(las|laz)$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+}
+
+
+##### 5) Helper: detect valid CSF outputs (resume-safe) #####
+## DONE means:
+##  - matching output exists (stem_csf OR stem_<anything>_csf)
+##  - AND output header is readable (so partial/broken files get re-run)
+
+detect_valid_csf_outputs <- function(filtered_tile_paths, ground_dir) {
+
+  ground_outputs_full <- list.files(
+    ground_dir,
+    pattern = "\\.(las|laz)$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  if (length(ground_outputs_full) == 0) {
+    return(rep(FALSE, length(filtered_tile_paths)))
+  }
+
+  ground_outputs_base <- basename(ground_outputs_full)
+  filtered_stems      <- tools::file_path_sans_ext(basename(filtered_tile_paths))
+
+  has_valid_output <- vapply(filtered_stems, function(stem) {
+
+    # Escape regex metacharacters in stem
+    stem_escaped <- gsub("([\\.^$|()\\[\\]{}*+?\\\\])", "\\\\\\1", stem)
+
+    # Match:
+    #   ^stem_csf.las
+    #   ^stem_<anything>_csf.las
+    pattern <- paste0("^", stem_escaped, "(_.*)?_csf\\.(las|laz)$")
+
+    idx <- which(grepl(pattern, ground_outputs_base, ignore.case = TRUE))
+    if (length(idx) == 0) return(FALSE)
+
+    # At least one candidate must be readable
+    any(vapply(ground_outputs_full[idx], function(out_path) {
+      h <- try(lidR::readLASheader(out_path), silent = TRUE)
+      !inherits(h, "try-error")
+    }, logical(1)))
+
+  }, logical(1))
+
+  has_valid_output
+}
+
+
+##### 6) Helper: build CSF worker function #####
+
+make_csf_ground_function <- function(study_area_name, log_directory_path, csf_algorithm_object) {
+
+  dir.create(log_directory_path, recursive = TRUE, showWarnings = FALSE)
+  csf_error_log_path <- file.path(log_directory_path, paste0(study_area_name, "_csf_ground_errors.txt"))
+
+  function(cluster, ...) {
+    tryCatch({
+
+      las_object <- lidR::readLAS(cluster)
+      if (is.null(las_object) || lidR::is.empty(las_object)) return(NULL)
+
+      las_object <- lidR::classify_ground(las_object, csf_algorithm_object)
+
+      las_object
+
+    }, error = function(e) {
+
+      cat(
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        "- ", study_area_name, " CSF ERROR:",
+        conditionMessage(e),
+        "\n",
+        file = csf_error_log_path,
+        append = TRUE
+      )
+
+      NULL
+    })
+  }
+}
+
+
+##### 7) MAIN LOOP: resume where it left off #####
+
+for (single_run in study_area_run_list) {
+
+  study_area_name <- single_run$study_area_name
+  filtered_dir    <- single_run$filtered_dir
+  ground_dir      <- single_run$ground_dir
+  log_dir         <- single_run$log_dir
+
+  cat("\n==============================\n")
+  cat("Running CSF ground classification for:", study_area_name, "\n")
+  cat("Filtered inputs:", filtered_dir, "\n")
+  cat("Ground outputs :", ground_dir, "\n")
+  cat("==============================\n\n")
+
+  filtered_tile_paths <- list_filtered_tile_paths(filtered_dir)
+
+  if (length(filtered_tile_paths) == 0) {
+    warning("No filtered tiles found for ", study_area_name, " in: ", filtered_dir)
+    next
+  }
+
+  cat(study_area_name, "filtered tiles found:", length(filtered_tile_paths), "\n")
+
+  # Resume-safe skip logic
+  already_done_logical <- detect_valid_csf_outputs(filtered_tile_paths, ground_dir)
+  remaining_tile_paths <- filtered_tile_paths[!already_done_logical]
+
+  cat(study_area_name, "tiles already ground-classified (valid):", sum(already_done_logical), "\n")
+  cat(study_area_name, "tiles remaining to classify            :", length(remaining_tile_paths), "\n")
+
+  saveRDS(
+    remaining_tile_paths,
+    file.path(log_dir, paste0(study_area_name, "_remaining_tiles_to_csf.rds"))
+  )
+
+  if (length(remaining_tile_paths) == 0) {
+    message("All tiles already have valid CSF outputs for ", study_area_name, ". Skipping.")
+    next
+  }
+
+  ctg_remaining <- lidR::readLAScatalog(remaining_tile_paths)
+  lidR::opt_chunk_size(ctg_remaining)   <- 0
+  lidR::opt_chunk_buffer(ctg_remaining) <- 0
+
+  # Keep naming consistent with existing outputs like:
+  # USGS_..._filtered_260_csf.las
+  lidR::opt_output_files(ctg_remaining) <- file.path(
+    ground_dir,
+    "{ORIGINALFILENAME}_{ID}_csf"
+  )
+
+  options(lidR.cores = 8)
+  lidR::set_lidr_threads(1)
+
+  csf_worker_function <- make_csf_ground_function(
+    study_area_name      = study_area_name,
+    log_directory_path   = log_dir,
+    csf_algorithm_object = csf_ground_fullArea
+  )
+
+  csf_apply_result <- lidR::catalog_apply(ctg_remaining, csf_worker_function)
+  print(csf_apply_result)
+
+  cat("\nCSF classification finished for ", study_area_name, ". Outputs in:\n", ground_dir, "\n")
+}
+
+
+##### 8) Sanity checks #####
+
+cat("\n--- FINAL OUTPUT COUNTS ---\n")
+cat("South Hills CSF outputs:",
+    length(list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n")
+cat("Albion CSF outputs     :",
+    length(list.files(albion_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n")
+
+# Confirm one South Hills output has ground class points
+one_out <- list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", full.names=TRUE, ignore.case=TRUE)[1]
+if (!is.na(one_out) && file.exists(one_out)) {
+  las_chk <- lidR::readLAS(one_out)
+  print(table(las_chk$Classification))
+}
+
+
+list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", full.names=FALSE) |> length()
+list.files(albion_ground_output_directory,     pattern="\\.(las|laz)$", full.names=FALSE) |> length()
+
+one_out <- list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", full.names=TRUE)[1]
+las_chk <- lidR::readLAS(one_out)
+table(las_chk$Classification)
 ```
 
