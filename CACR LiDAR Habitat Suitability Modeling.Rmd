@@ -1652,14 +1652,32 @@ lidR::catalog_apply(ctg_norm_utm12, chm_fun)
 # - Height stats (mean/sd/p95) are NA when there are no points in that bin
 # - Percent-in-bin denominator = vegetation points ONLY (not all points)
 
+####### Step 10 PREP (run once, OUTSIDE any loop) #######
+
+# Extracts a tile key like 11TQG380725 or 12TTM790770 from the filename. Found file names got too long for Windows 
+# Falls back to a shortened basename if the pattern isn't found.
+extract_tile_key <- function(single_norm_path) {
+  file_stem <- tools::file_path_sans_ext(basename(single_norm_path))
+
+  # Pattern: 2 digits + 3 letters + 6 digits (e.g., 11TQG380725)
+  m <- regexpr("\\b\\d{2}[A-Z]{3}\\d{6}\\b", file_stem, perl = TRUE)
+
+  if (m[1] != -1) {
+    return(regmatches(file_stem, m)[1])
+  }
+
+  # Fallback: strip very long standardized suffix if present
+  file_stem <- sub("_center500_filtered_.*$", "", file_stem)
+
+  # If still long, hard truncate as last resort
+  substr(file_stem, 1, 60)
+}
+
+# Resolution for vertical bin rasters
 vertical_res_m <- 5
 vertical_cell_area_m2 <- vertical_res_m * vertical_res_m
 
-# Height bins: [low, high) i.e., low inclusive, high exclusive
-# - bin_0to2m includes 0 <= Z < 2
-# - bin_2to5m includes 2 <= Z < 5
-# - bin_5to10m includes 5 <= Z < 10
-# - bin_10mplus includes 10 <= Z < Inf
+# Height bins: [low, high)
 height_bin_definitions <- list(
   bin_0to2m   = c(0, 2),
   bin_2to5m   = c(2, 5),
@@ -1667,84 +1685,93 @@ height_bin_definitions <- list(
   bin_10mplus = c(10, Inf)
 )
 
-# "True canopy cover" threshold (for my forests with typical canopy 15–25m)
+# "True canopy cover" threshold (for canopy ~15–25m typical, >=10m is reasonable)
 canopy_height_threshold_m <- 10
 
-# Safe p95 helper (returns NA if no points)
+# Force terra tempdir to a known writable folder (fixes many writeRaster failures)
+terra_tmp <- file.path(output_root_directory, "terra_tmp")
+dir.create(terra_tmp, showWarnings = FALSE, recursive = TRUE)
+terra::terraOptions(tempdir = terra_tmp)
+stopifnot(dir.exists(terra_tmp))
+stopifnot(file.access(terra_tmp, 2) == 0)  # 0 means writable
+
+# Safe p95 helper
 p95_fun <- function(z) {
   if (length(z) == 0) return(NA_real_)
   as.numeric(stats::quantile(z, probs = 0.95, na.rm = TRUE, type = 7))
 }
 
+# WriteRaster wrapper that fails with the exact filename (so debugging is painless)
+safe_write <- function(r, filename) {
+  tryCatch(
+    terra::writeRaster(r, filename = filename, overwrite = TRUE),
+    error = function(e) stop("writeRaster failed for:\n  ", filename, "\nReason: ", conditionMessage(e))
+  )
+}
+
+####### Step 10 FUNCTION #######
+
 compute_and_write_vertical_bins <- function(single_norm_path, vertical_bins_dir_list) {
 
-  ###### Load normalized LAS/LAZ ######
-  # Assumes Z is normalized height above ground already
+  ###### 10.1 Load normalized LAS ######
   las_object <- lidR::readLAS(single_norm_path)
   if (lidR::is.empty(las_object)) return(invisible(NULL))
 
-  base_name <- tools::file_path_sans_ext(basename(single_norm_path))
-  message("Vertical bins (veg-only): ", base_name)
+ # Use tile key for output prefixes (short + meaningful)
+  tile_key <- extract_tile_key(single_norm_path)
+  message("Step 10 (veg-only bins): ", tile_key)
 
-  ###### Define VEGETATION points (no ground; Z > 0) ######
-  # This is the ONLY point set used for "density" and "percent" denominators
-  veg_all_pts <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
+  # Optional but helpful: absolute, normalized output dirs (removes //)
+  summary_dir <- normalizePath(vertical_bins_dir_list$summary, winslash = "\\", mustWork = TRUE)
 
-  # If there is zero vegetation in the whole tile:
-  # - We still want rasters, but they should be 0 for density/pct/cover everywhere.
-  # - Height stats should be NA everywhere.
-  #
-  # To write rasters, we need a raster "template" grid. We create it ONCE using las_object
-  # (not for metrics; only to get extent/resolution aligned correctly).
+  ###### 10.2 Template grid (geometry only) ######
+  # Using all points ONLY to create the raster grid (extent/resolution)
   template_count <- lidR::pixel_metrics(las_object, ~length(Z), res = vertical_res_m)
-
-  # If template_count is invalid (rare, but safe-guard)
   if (terra::ncell(template_count) == 0) {
-    message("  SKIP: template grid empty for ", base_name)
+    message("  SKIP: template grid empty for ", tile_key)
     return(invisible(NULL))
   }
 
-  ###### Vegetation count raster (denominator grid) ######
-  # This is the number of vegetation points in each 5m cell.
+  ###### 10.3 Define vegetation-only points (your metrics are ONLY based on veg) ######
+  veg_all_pts <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
+
+  ###### 10.4 Vegetation count raster (denominator) ######
+  # If there is no vegetation anywhere: veg_count is 0 everywhere (NOT NA)
   if (lidR::is.empty(veg_all_pts)) {
     veg_count_rast <- template_count
     terra::values(veg_count_rast) <- 0
   } else {
     veg_count_rast <- lidR::pixel_metrics(veg_all_pts, ~length(Z), res = vertical_res_m)
 
-    # Ensure same geometry as template (rare mismatch insurance)
+    # Rare mismatch insurance
     if (!terra::compareGeom(template_count, veg_count_rast, stopOnError = FALSE)) {
       veg_count_rast <- terra::resample(veg_count_rast, template_count, method = "near")
     }
   }
-terra::writeRaster(
-  veg_count_rast,
-  filename = file.path(vertical_bins_dir_list$summary, paste0(base_name, "_vegcount_5m.tif")),
-  overwrite = TRUE
-)
-  ###### Summary: total vegetation density (points per m²) ######
-  # If a pixel has no veg: veg_count_rast = 0 -> density = 0 (correct)
-  veg_density_rast <- veg_count_rast / vertical_cell_area_m2
 
-  terra::writeRaster(
-    veg_density_rast,
-    filename = file.path(vertical_bins_dir_list$summary, paste0(base_name, "_dens_veg_total_5m.tif")),
-    overwrite = TRUE
+  safe_write(
+    veg_count_rast,
+    file.path(vertical_bins_dir_list$summary, paste0(tile_key, "_vegcount_5m.tif"))
   )
 
-  ###### Canopy cover (FIRST RETURNS ONLY, vegetation only, >= threshold) ######
-  # Interpretation:
-  # - numerator: # first-return vegetation points at/above threshold
-  # - denominator: # first-return vegetation points in cell
-  # - if denominator = 0 => canopy cover = 0 (no canopy)
+  ###### 10.5 Total vegetation density (points per m²) ######
+  veg_density_rast <- veg_count_rast / vertical_cell_area_m2
+
+  safe_write(
+    veg_density_rast,
+    file.path(vertical_bins_dir_list$summary, paste0(tile_key, "_dens_veg_total_5m.tif"))
+  )
+
+  ###### 10.6 Canopy cover (FIRST RETURNS ONLY; veg-only; >= threshold) ######
+  # cover = (# first-return veg points with Z >= threshold) / (# first-return veg points)
+  # if denom=0 => cover=0
+
   las_cover <- las_object
 
-  # Use first returns if ReturnNumber exists (LAS 1.2+ usually has it)
   if ("ReturnNumber" %in% names(las_cover@data)) {
     las_cover <- lidR::filter_poi(las_cover, ReturnNumber == 1L)
   }
 
-  # Vegetation only for cover too (exclude ground)
   las_cover <- lidR::filter_poi(las_cover, Classification != 2L & Z > 0)
 
   if (lidR::is.empty(las_cover)) {
@@ -1752,37 +1779,33 @@ terra::writeRaster(
     terra::values(canopy_cover_rast) <- 0
   } else {
     canopy_cover_rast <- lidR::pixel_metrics(
-  las_cover,
-  # length(Z) is the number of (first-return) veg points in this cell
-        # if none, cover = 0 (not NA)
-        ~ ifelse(length(Z) == 0, 0, sum(Z >= canopy_height_threshold_m) / length(Z)),
-  res = vertical_res_m
-)
+      las_cover,
+      ~ ifelse(length(Z) == 0, 0, sum(Z >= canopy_height_threshold_m) / length(Z)),
+      res = vertical_res_m
+    )
 
     if (!terra::compareGeom(template_count, canopy_cover_rast, stopOnError = FALSE)) {
       canopy_cover_rast <- terra::resample(canopy_cover_rast, template_count, method = "near")
     }
   }
 
-  terra::writeRaster(
+  safe_write(
     canopy_cover_rast,
-    filename = file.path(
+    file.path(
       vertical_bins_dir_list$summary,
-      paste0(base_name, "_canopycover_firstreturn_veg_ge", canopy_height_threshold_m, "m_5m.tif")
-    ),
-    overwrite = TRUE
+      paste0(tile_key, "_canopycover_firstreturn_veg_ge", canopy_height_threshold_m, "m_5m.tif")
+    )
   )
 
-  ###### Per-bin metrics ######
+  ###### 10.7 Per-bin rasters ######
   for (bin_name in names(height_bin_definitions)) {
 
     zlo <- height_bin_definitions[[bin_name]][1]
     zhi <- height_bin_definitions[[bin_name]][2]
 
-    # Vegetation-only points inside this vertical stratum
+    # Bin points: veg-only + stratum filter
     bin_pts <- lidR::filter_poi(veg_all_pts, Z >= zlo & Z < zhi)
 
-    # Output folder for this bin
     out_dir <- switch(
       bin_name,
       bin_0to2m   = vertical_bins_dir_list$bin_0to2m,
@@ -1791,17 +1814,13 @@ terra::writeRaster(
       bin_10mplus = vertical_bins_dir_list$bin_10mplus
     )
 
-    # Initialize rasters from template (correct geometry), then fill values
-    # This avoids a lot of duplicated "copy total_count_rast" style code.
+    # Initialize rasters from template
     bin_count_rast <- template_count
     bin_mean_rast  <- template_count
     bin_sd_rast    <- template_count
     bin_p95_rast   <- template_count
 
-    # Default values if no points in bin:
-    # - density = 0
-    # - percent = 0
-    # - mean/sd/p95 = NA
+    # Defaults: no points => density/percent=0, stats=NA
     terra::values(bin_count_rast) <- 0
     terra::values(bin_mean_rast)  <- NA_real_
     terra::values(bin_sd_rast)    <- NA_real_
@@ -1809,20 +1828,17 @@ terra::writeRaster(
 
     if (!lidR::is.empty(bin_pts)) {
 
-      # Count of bin points per 5m cell
+      # Counts
       bin_count_tmp <- lidR::pixel_metrics(bin_pts, ~length(Z), res = vertical_res_m)
-
       if (!terra::compareGeom(template_count, bin_count_tmp, stopOnError = FALSE)) {
         bin_count_tmp <- terra::resample(bin_count_tmp, template_count, method = "near")
       }
-
-      # Replace zeros only where we have bin counts
       terra::values(bin_count_rast) <- terra::values(bin_count_tmp)
 
-      # Height stats per cell (only defined where there are points)
-      bin_mean_tmp <- lidR::pixel_metrics(bin_pts, ~mean(Z), res = vertical_res_m)
-      bin_sd_tmp   <- lidR::pixel_metrics(bin_pts, ~sd(Z),   res = vertical_res_m)
-      bin_p95_tmp  <- lidR::pixel_metrics(bin_pts, ~p95_fun(Z), res = vertical_res_m)
+      # Stats
+      bin_mean_tmp <- lidR::pixel_metrics(bin_pts, ~mean(Z),   res = vertical_res_m)
+      bin_sd_tmp   <- lidR::pixel_metrics(bin_pts, ~sd(Z),     res = vertical_res_m)
+      bin_p95_tmp  <- lidR::pixel_metrics(bin_pts, ~p95_fun(Z),res = vertical_res_m)
 
       if (!terra::compareGeom(template_count, bin_mean_tmp, stopOnError = FALSE)) {
         bin_mean_tmp <- terra::resample(bin_mean_tmp, template_count, method = "near")
@@ -1839,25 +1855,25 @@ terra::writeRaster(
       terra::values(bin_p95_rast)  <- terra::values(bin_p95_tmp)
     }
 
-    # Convert count -> density (points / m²)
+    # Density
     bin_density_rast <- bin_count_rast / vertical_cell_area_m2
 
-    # Percent of vegetation in bin:
-    # - denominator: veg_count_rast (veg-only)
-    # - if denom = 0 => percent = 0 (no vegetation)
+    # Percent of veg in this bin (veg-only denominator)
     bin_pct_rast <- bin_count_rast / veg_count_rast
-    bin_pct_rast[!is.finite(bin_pct_rast)] <- 0
+    bin_pct_rast[!is.finite(bin_pct_rast)] <- 0  # denom=0 => 0
 
-    # Write outputs (consistent naming)
-    terra::writeRaster(bin_density_rast, filename = file.path(out_dir, paste0(base_name, "_dens_5m.tif")),  overwrite = TRUE)
-    terra::writeRaster(bin_pct_rast,     filename = file.path(out_dir, paste0(base_name, "_pct_5m.tif")),   overwrite = TRUE)
-    terra::writeRaster(bin_mean_rast,    filename = file.path(out_dir, paste0(base_name, "_meanZ_5m.tif")), overwrite = TRUE)
-    terra::writeRaster(bin_sd_rast,      filename = file.path(out_dir, paste0(base_name, "_sdZ_5m.tif")),   overwrite = TRUE)
-    terra::writeRaster(bin_p95_rast,     filename = file.path(out_dir, paste0(base_name, "_p95Z_5m.tif")),  overwrite = TRUE)
+    # Write
+    safe_write(bin_density_rast, file.path(out_dir, paste0(tile_key, "_dens_5m.tif")))
+    safe_write(bin_pct_rast,     file.path(out_dir, paste0(tile_key, "_pct_5m.tif")))
+    safe_write(bin_mean_rast,    file.path(out_dir, paste0(tile_key, "_meanZ_5m.tif")))
+    safe_write(bin_sd_rast,      file.path(out_dir, paste0(tile_key, "_sdZ_5m.tif")))
+    safe_write(bin_p95_rast,     file.path(out_dir, paste0(tile_key, "_p95Z_5m.tif")))
   }
 
   invisible(NULL)
 }
+
+####### Step 10 RUNS #######
 
 ###### Step 10a ######
 ###### RUN VERTICAL BINS: UTM11 ######
@@ -1917,6 +1933,7 @@ qa_check_bin_pct_sum <- function(vertical_bins_dir_list,
 
     # Sum of bin percentages
     r_sum <- r0 + r2 + r5 + r10
+    r_err <- abs(r_sum - 1)
 
     # If you wrote a veg density raster in summary, use it to split "veg present" vs "no veg"
     # (You may have _dens_total_5m.tif; ideally you'd have _dens_veg_total_5m.tif, but we can use total density as a proxy.)
