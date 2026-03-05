@@ -1192,19 +1192,39 @@ dir.create(metrics_utm12_root_dir, showWarnings = FALSE, recursive = TRUE)
 # Within each parent, create standardized subfolders
 create_metrics_subfolders <- function(metrics_root_dir) {
 
+  vertical_root_dir <- file.path(metrics_root_dir, "vertical_bins_res5m")
+
   subfolder_list <- list(
-    ground_csf   = file.path(metrics_root_dir, "ground_csf"),
-    dtm_res1m    = file.path(metrics_root_dir, "dtm_res1m"),
-    slope_res1m  = file.path(metrics_root_dir, "slope_res1m"),
-    aspect_res1m = file.path(metrics_root_dir, "aspect_res1m"),
-    norm_csf     = file.path(metrics_root_dir, "norm_csf"),
-    chm_res1m    = file.path(metrics_root_dir, "chm_res1m"),
-    understory_10m = file.path(metrics_root_dir, "understory_res10m"),
-    complexity_res1m = file.path(metrics_root_dir, "complexity_res1m")
+    ground_csf        = file.path(metrics_root_dir, "ground_csf"),
+    dtm_res1m         = file.path(metrics_root_dir, "dtm_res1m"),
+    slope_res1m       = file.path(metrics_root_dir, "slope_res1m"),
+    aspect_res1m      = file.path(metrics_root_dir, "aspect_res1m"),
+    norm_csf          = file.path(metrics_root_dir, "norm_csf"),
+    chm_res1m         = file.path(metrics_root_dir, "chm_res1m"),
+    complexity_res1m  = file.path(metrics_root_dir, "complexity_res1m"),
+
+    # NEW: Vertical bins with folders per bin + a summary folder
+    vertical_bins_5m = list(
+      root       = vertical_root_dir,
+      summary    = file.path(vertical_root_dir, "summary"),
+      bin_0to2m   = file.path(vertical_root_dir, "bin_0to2m"),
+      bin_2to5m   = file.path(vertical_root_dir, "bin_2to5m"),
+      bin_5to10m  = file.path(vertical_root_dir, "bin_5to10m"),
+      bin_10mplus = file.path(vertical_root_dir, "bin_10mplus")
+    ),
+
+    # NEW: Rugosity outputs
+    rugosity_5m = file.path(metrics_root_dir, "rugosity_res5m")
   )
 
-  # Create each directory on disk
-  for (single_dir in subfolder_list) {
+  # Create simple folders
+  for (nm in names(subfolder_list)) {
+    if (nm == "vertical_bins_5m") next
+    dir.create(subfolder_list[[nm]], showWarnings = FALSE, recursive = TRUE)
+  }
+
+  # Create vertical bin folders
+  for (single_dir in subfolder_list$vertical_bins_5m) {
     dir.create(single_dir, showWarnings = FALSE, recursive = TRUE)
   }
 
@@ -1217,6 +1237,8 @@ utm12_dirs <- create_metrics_subfolders(metrics_utm12_root_dir)
 # Print for QA so you can SEE where stuff will go
 print(utm11_dirs)
 print(utm12_dirs)
+
+
 
 #### 2) Build CRS - Clean ROI Catalogs      ####
 
@@ -1618,110 +1640,382 @@ lidR::opt_output_files(ctg_norm_utm12) <- file.path(
 
 lidR::catalog_apply(ctg_norm_utm12, chm_fun)
 
-#### 10) Understory Metrics (10m) (BOTH)   ####
+###### Step 10 ######
+###### Vertical bins (5m) + Canopy cover (first returns only; canopy >= 10m) ######
 
-# Outputs:
-# - understory_res10m_utm11/*_dens_* and *_pct_*
-# - understory_res10m_utm12/*_dens_* and *_pct_*
+# PURPOSE:
+# - Compute vegetation-only vertical structure metrics in 5x5m cells
+# - Write outputs into per-bin folders + a summary folder
+#
+# IMPORTANT LOGIC:
+# - If there is NO vegetation in a pixel: density/percent/cover = 0 (NOT NA)
+# - Height stats (mean/sd/p95) are NA when there are no points in that bin
+# - Percent-in-bin denominator = vegetation points ONLY (not all points)
 
-understory_res_m <- 10
-understory_cell_area_m2 <- understory_res_m * understory_res_m
+vertical_res_m <- 5
+vertical_cell_area_m2 <- vertical_res_m * vertical_res_m
 
-utm11_norm_files_for_loop <- ctg_norm_utm11@data$filename
-utm12_norm_files_for_loop <- ctg_norm_utm12@data$filename
+# Height bins: [low, high) i.e., low inclusive, high exclusive
+# - bin_0to2m includes 0 <= Z < 2
+# - bin_2to5m includes 2 <= Z < 5
+# - bin_5to10m includes 5 <= Z < 10
+# - bin_10mplus includes 10 <= Z < Inf
+height_bin_definitions <- list(
+  bin_0to2m   = c(0, 2),
+  bin_2to5m   = c(2, 5),
+  bin_5to10m  = c(5, 10),
+  bin_10mplus = c(10, Inf)
+)
 
-########## UNDERSTORY: UTM11 ##########
+# "True canopy cover" threshold (for my forests with typical canopy 15–25m)
+canopy_height_threshold_m <- 10
 
+# Safe p95 helper (returns NA if no points)
+p95_fun <- function(z) {
+  if (length(z) == 0) return(NA_real_)
+  as.numeric(stats::quantile(z, probs = 0.95, na.rm = TRUE, type = 7))
+}
+
+compute_and_write_vertical_bins <- function(single_norm_path, vertical_bins_dir_list) {
+
+  ###### Load normalized LAS/LAZ ######
+  # Assumes Z is normalized height above ground already
+  las_object <- lidR::readLAS(single_norm_path)
+  if (lidR::is.empty(las_object)) return(invisible(NULL))
+
+  base_name <- tools::file_path_sans_ext(basename(single_norm_path))
+  message("Vertical bins (veg-only): ", base_name)
+
+  ###### Define VEGETATION points (no ground; Z > 0) ######
+  # This is the ONLY point set used for "density" and "percent" denominators
+  veg_all_pts <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
+
+  # If there is zero vegetation in the whole tile:
+  # - We still want rasters, but they should be 0 for density/pct/cover everywhere.
+  # - Height stats should be NA everywhere.
+  #
+  # To write rasters, we need a raster "template" grid. We create it ONCE using las_object
+  # (not for metrics; only to get extent/resolution aligned correctly).
+  template_count <- lidR::pixel_metrics(las_object, ~length(Z), res = vertical_res_m)
+
+  # If template_count is invalid (rare, but safe-guard)
+  if (terra::ncell(template_count) == 0) {
+    message("  SKIP: template grid empty for ", base_name)
+    return(invisible(NULL))
+  }
+
+  ###### Vegetation count raster (denominator grid) ######
+  # This is the number of vegetation points in each 5m cell.
+  if (lidR::is.empty(veg_all_pts)) {
+    veg_count_rast <- template_count
+    terra::values(veg_count_rast) <- 0
+  } else {
+    veg_count_rast <- lidR::pixel_metrics(veg_all_pts, ~length(Z), res = vertical_res_m)
+
+    # Ensure same geometry as template (rare mismatch insurance)
+    if (!terra::compareGeom(template_count, veg_count_rast, stopOnError = FALSE)) {
+      veg_count_rast <- terra::resample(veg_count_rast, template_count, method = "near")
+    }
+  }
+terra::writeRaster(
+  veg_count_rast,
+  filename = file.path(vertical_bins_dir_list$summary, paste0(base_name, "_vegcount_5m.tif")),
+  overwrite = TRUE
+)
+  ###### Summary: total vegetation density (points per m²) ######
+  # If a pixel has no veg: veg_count_rast = 0 -> density = 0 (correct)
+  veg_density_rast <- veg_count_rast / vertical_cell_area_m2
+
+  terra::writeRaster(
+    veg_density_rast,
+    filename = file.path(vertical_bins_dir_list$summary, paste0(base_name, "_dens_veg_total_5m.tif")),
+    overwrite = TRUE
+  )
+
+  ###### Canopy cover (FIRST RETURNS ONLY, vegetation only, >= threshold) ######
+  # Interpretation:
+  # - numerator: # first-return vegetation points at/above threshold
+  # - denominator: # first-return vegetation points in cell
+  # - if denominator = 0 => canopy cover = 0 (no canopy)
+  las_cover <- las_object
+
+  # Use first returns if ReturnNumber exists (LAS 1.2+ usually has it)
+  if ("ReturnNumber" %in% names(las_cover@data)) {
+    las_cover <- lidR::filter_poi(las_cover, ReturnNumber == 1L)
+  }
+
+  # Vegetation only for cover too (exclude ground)
+  las_cover <- lidR::filter_poi(las_cover, Classification != 2L & Z > 0)
+
+  if (lidR::is.empty(las_cover)) {
+    canopy_cover_rast <- template_count
+    terra::values(canopy_cover_rast) <- 0
+  } else {
+    canopy_cover_rast <- lidR::pixel_metrics(
+      las_cover,
+      ~ {
+        # length(Z) is the number of (first-return) veg points in this cell
+        # if none, cover = 0 (not NA)
+        if (length(Z) == 0) return(0)
+        sum(Z >= canopy_height_threshold_m) / length(Z)
+      },
+      res = vertical_res_m
+    )
+
+    if (!terra::compareGeom(template_count, canopy_cover_rast, stopOnError = FALSE)) {
+      canopy_cover_rast <- terra::resample(canopy_cover_rast, template_count, method = "near")
+    }
+  }
+
+  terra::writeRaster(
+    canopy_cover_rast,
+    filename = file.path(
+      vertical_bins_dir_list$summary,
+      paste0(base_name, "_canopycover_firstreturn_veg_ge", canopy_height_threshold_m, "m_5m.tif")
+    ),
+    overwrite = TRUE
+  )
+
+  ###### Per-bin metrics ######
+  for (bin_name in names(height_bin_definitions)) {
+
+    zlo <- height_bin_definitions[[bin_name]][1]
+    zhi <- height_bin_definitions[[bin_name]][2]
+
+    # Vegetation-only points inside this vertical stratum
+    bin_pts <- lidR::filter_poi(veg_all_pts, Z >= zlo & Z < zhi)
+
+    # Output folder for this bin
+    out_dir <- switch(
+      bin_name,
+      bin_0to2m   = vertical_bins_dir_list$bin_0to2m,
+      bin_2to5m   = vertical_bins_dir_list$bin_2to5m,
+      bin_5to10m  = vertical_bins_dir_list$bin_5to10m,
+      bin_10mplus = vertical_bins_dir_list$bin_10mplus
+    )
+
+    # Initialize rasters from template (correct geometry), then fill values
+    # This avoids a lot of duplicated "copy total_count_rast" style code.
+    bin_count_rast <- template_count
+    bin_mean_rast  <- template_count
+    bin_sd_rast    <- template_count
+    bin_p95_rast   <- template_count
+
+    # Default values if no points in bin:
+    # - density = 0
+    # - percent = 0
+    # - mean/sd/p95 = NA
+    terra::values(bin_count_rast) <- 0
+    terra::values(bin_mean_rast)  <- NA_real_
+    terra::values(bin_sd_rast)    <- NA_real_
+    terra::values(bin_p95_rast)   <- NA_real_
+
+    if (!lidR::is.empty(bin_pts)) {
+
+      # Count of bin points per 5m cell
+      bin_count_tmp <- lidR::pixel_metrics(bin_pts, ~length(Z), res = vertical_res_m)
+
+      if (!terra::compareGeom(template_count, bin_count_tmp, stopOnError = FALSE)) {
+        bin_count_tmp <- terra::resample(bin_count_tmp, template_count, method = "near")
+      }
+
+      # Replace zeros only where we have bin counts
+      terra::values(bin_count_rast) <- terra::values(bin_count_tmp)
+
+      # Height stats per cell (only defined where there are points)
+      bin_mean_tmp <- lidR::pixel_metrics(bin_pts, ~mean(Z), res = vertical_res_m)
+      bin_sd_tmp   <- lidR::pixel_metrics(bin_pts, ~sd(Z),   res = vertical_res_m)
+      bin_p95_tmp  <- lidR::pixel_metrics(bin_pts, ~p95_fun(Z), res = vertical_res_m)
+
+      if (!terra::compareGeom(template_count, bin_mean_tmp, stopOnError = FALSE)) {
+        bin_mean_tmp <- terra::resample(bin_mean_tmp, template_count, method = "near")
+      }
+      if (!terra::compareGeom(template_count, bin_sd_tmp, stopOnError = FALSE)) {
+        bin_sd_tmp <- terra::resample(bin_sd_tmp, template_count, method = "near")
+      }
+      if (!terra::compareGeom(template_count, bin_p95_tmp, stopOnError = FALSE)) {
+        bin_p95_tmp <- terra::resample(bin_p95_tmp, template_count, method = "near")
+      }
+
+      terra::values(bin_mean_rast) <- terra::values(bin_mean_tmp)
+      terra::values(bin_sd_rast)   <- terra::values(bin_sd_tmp)
+      terra::values(bin_p95_rast)  <- terra::values(bin_p95_tmp)
+    }
+
+    # Convert count -> density (points / m²)
+    bin_density_rast <- bin_count_rast / vertical_cell_area_m2
+
+    # Percent of vegetation in bin:
+    # - denominator: veg_count_rast (veg-only)
+    # - if denom = 0 => percent = 0 (no vegetation)
+    bin_pct_rast <- bin_count_rast / veg_count_rast
+    bin_pct_rast[!is.finite(bin_pct_rast)] <- 0
+
+    # Write outputs (consistent naming)
+    terra::writeRaster(bin_density_rast, filename = file.path(out_dir, paste0(base_name, "_dens_5m.tif")),  overwrite = TRUE)
+    terra::writeRaster(bin_pct_rast,     filename = file.path(out_dir, paste0(base_name, "_pct_5m.tif")),   overwrite = TRUE)
+    terra::writeRaster(bin_mean_rast,    filename = file.path(out_dir, paste0(base_name, "_meanZ_5m.tif")), overwrite = TRUE)
+    terra::writeRaster(bin_sd_rast,      filename = file.path(out_dir, paste0(base_name, "_sdZ_5m.tif")),   overwrite = TRUE)
+    terra::writeRaster(bin_p95_rast,     filename = file.path(out_dir, paste0(base_name, "_p95Z_5m.tif")),  overwrite = TRUE)
+  }
+
+  invisible(NULL)
+}
+
+###### Step 10a ######
+###### RUN VERTICAL BINS: UTM11 ######
 for (single_norm_path in utm11_norm_files_for_loop) {
-
-  las_object <- lidR::readLAS(single_norm_path)
-  if (lidR::is.empty(las_object)) next
-
-  base_name <- tools::file_path_sans_ext(basename(single_norm_path))
-
-  total_count <- lidR::pixel_metrics(las_object, ~length(Z), res = understory_res_m)
-  if (terra::ncell(total_count) == 0 || all(is.na(terra::values(total_count)))) next
-  total_density <- total_count / understory_cell_area_m2
-
-  under_pts <- lidR::filter_poi(las_object, Classification != 2L & Z < 2)
-
-  if (lidR::is.empty(under_pts)) {
-    under_density <- total_density; terra::values(under_density) <- 0
-    pct_under <- total_density; terra::values(pct_under) <- 0
-  } else {
-    under_count <- lidR::pixel_metrics(under_pts, ~length(Z), res = understory_res_m)
-
-    if (!terra::compareGeom(total_count, under_count, stopOnError = FALSE)) {
-      under_count <- terra::resample(under_count, total_count, method = "near")
-    }
-
-    under_density <- under_count / understory_cell_area_m2
-    pct_under <- under_density / total_density
-    pct_under[!is.finite(pct_under)] <- NA
-  }
-
-  terra::writeRaster(total_density,
-                     filename = file.path(utm11_dirs$understory_10m, paste0(base_name, "_dens_total_10m.tif")),
-                     overwrite = TRUE)
-
-  terra::writeRaster(under_density,
-                     filename = file.path(utm11_dirs$understory_10m, paste0(base_name, "_dens_under_0to2m_10m.tif")),
-                     overwrite = TRUE)
-
-  terra::writeRaster(pct_under,
-                     filename = file.path(utm11_dirs$understory_10m, paste0(base_name, "_pct_under_0to2m_10m.tif")),
-                     overwrite = TRUE)
+  compute_and_write_vertical_bins(single_norm_path, utm11_dirs$vertical_bins_5m)
 }
 
-########## UNDERSTORY: UTM12 ##########
-
+###### Step 10b ######
+###### RUN VERTICAL BINS: UTM12 ######
 for (single_norm_path in utm12_norm_files_for_loop) {
-
-  las_object <- lidR::readLAS(single_norm_path)
-  if (lidR::is.empty(las_object)) next
-
-  base_name <- tools::file_path_sans_ext(basename(single_norm_path))
-
-  total_count <- lidR::pixel_metrics(las_object, ~length(Z), res = understory_res_m)
-  if (terra::ncell(total_count) == 0 || all(is.na(terra::values(total_count)))) next
-  total_density <- total_count / understory_cell_area_m2
-
-  under_pts <- lidR::filter_poi(las_object, Classification != 2L & Z < 2)
-
-  if (lidR::is.empty(under_pts)) {
-    under_density <- total_density; terra::values(under_density) <- 0
-    pct_under <- total_density; terra::values(pct_under) <- 0
-  } else {
-    under_count <- lidR::pixel_metrics(under_pts, ~length(Z), res = understory_res_m)
-
-    if (!terra::compareGeom(total_count, under_count, stopOnError = FALSE)) {
-      under_count <- terra::resample(under_count, total_count, method = "near")
-    }
-
-    under_density <- under_count / understory_cell_area_m2
-    pct_under <- under_density / total_density
-    pct_under[!is.finite(pct_under)] <- NA
-  }
-
-  terra::writeRaster(total_density,
-                     filename = file.path(utm12_dirs$understory_10m, paste0(base_name, "_dens_total_10m.tif")),
-                     overwrite = TRUE)
-
-  terra::writeRaster(under_density,
-                     filename = file.path(utm12_dirs$understory_10m, paste0(base_name, "_dens_under_0to2m_10m.tif")),
-                     overwrite = TRUE)
-
-  terra::writeRaster(pct_under,
-                     filename = file.path(utm12_dirs$understory_10m, paste0(base_name, "_pct_under_0to2m_10m.tif")),
-                     overwrite = TRUE)
+  compute_and_write_vertical_bins(single_norm_path, utm12_dirs$vertical_bins_5m)
 }
 
+###### Step 10c ######
+###### QA: Do bin % rasters sum to ~1 per pixel? ######
 
-#### 11) Complexity (1m) (BOTH)           ####
+qa_check_bin_pct_sum <- function(vertical_bins_dir_list,
+                                 summary_dir = vertical_bins_dir_list$summary,
+                                 tol = 0.02) {
+  # tol = allowable absolute deviation from 1.0 (e.g., 0.02 = 2%)
 
-# Outputs:
-# - complexity_res1m_utm11/*_complexity.tif
-# - complexity_res1m_utm12/*_complexity.tif
+  # For each tile, your rasters live in per-bin folders.
+  # We find matching *_pct_5m.tif files for each bin and group by base_name.
+
+  pct0_files <- list.files(vertical_bins_dir_list$bin_0to2m,   pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
+  pct2_files <- list.files(vertical_bins_dir_list$bin_2to5m,   pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
+  pct5_files <- list.files(vertical_bins_dir_list$bin_5to10m,  pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
+  pct10_files<- list.files(vertical_bins_dir_list$bin_10mplus, pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
+
+  stopifnot(length(pct0_files) > 0, length(pct2_files) > 0, length(pct5_files) > 0, length(pct10_files) > 0)
+
+  # Helper to get base id = everything before "_pct_5m.tif"
+  get_id <- function(x) sub("_pct_5m\\.tif$", "", basename(x), ignore.case = TRUE)
+
+  ids0  <- vapply(pct0_files,  get_id, character(1))
+  ids2  <- vapply(pct2_files,  get_id, character(1))
+  ids5  <- vapply(pct5_files,  get_id, character(1))
+  ids10 <- vapply(pct10_files, get_id, character(1))
+
+  common_ids <- Reduce(intersect, list(ids0, ids2, ids5, ids10))
+  if (length(common_ids) == 0) stop("No matching *_pct_5m.tif sets found across the 4 bins.")
+
+  message("QA: found ", length(common_ids), " tiles with all 4 bin pct rasters.")
+
+  # Loop tile-by-tile
+  for (id in common_ids) {
+
+    f0  <- pct0_files[ids0  == id][1]
+    f2  <- pct2_files[ids2  == id][1]
+    f5  <- pct5_files[ids5  == id][1]
+    f10 <- pct10_files[ids10 == id][1]
+
+    r0  <- terra::rast(f0)
+    r2  <- terra::rast(f2)
+    r5  <- terra::rast(f5)
+    r10 <- terra::rast(f10)
+
+    # Sum of bin percentages
+    r_sum <- r0 + r2 + r5 + r10
+
+    # If you wrote a veg density raster in summary, use it to split "veg present" vs "no veg"
+    # (You may have _dens_total_5m.tif; ideally you'd have _dens_veg_total_5m.tif, but we can use total density as a proxy.)
+    
+vegcount_path <- file.path(summary_dir, paste0(id, "_vegcount_5m.tif"))
+vegcount_r <- if (file.exists(vegcount_path)) terra::rast(vegcount_path) else NULL
+
+if (!is.null(vegcount_r)) {
+  # Pixels with vegetation returns (correct mask for your veg-only bins)
+  mask_has_pts <- vegcount_r > 0
+} else {
+  # Fallback: if vegcount wasn't written, just use non-NA sum pixels
+  mask_has_pts <- !is.na(r_sum)
+}
+
+    # Stats: where there are points, does it sum close to 1?
+    vals_sum <- terra::values(r_sum, mat = FALSE)
+    vals_err <- terra::values(r_err, mat = FALSE)
+    vals_mask <- terra::values(mask_has_pts, mat = FALSE)
+
+    ok_idx <- which(!is.na(vals_sum) & !is.na(vals_mask) & vals_mask)
+
+    if (length(ok_idx) == 0) {
+      message("QA SKIP: no valid pixels for ", id)
+      next
+    }
+
+    mean_sum <- mean(vals_sum[ok_idx], na.rm = TRUE)
+    max_err  <- max(vals_err[ok_idx],  na.rm = TRUE)
+    pct_bad  <- mean(vals_err[ok_idx] > tol, na.rm = TRUE) * 100
+
+    message("QA ", id, " | mean(sum)=", round(mean_sum, 4),
+            " | max|sum-1|=", round(max_err, 4),
+            " | %pixels>|tol|=", round(pct_bad, 2), "%")
+
+    # Write rasters for visual QA in QGIS
+    terra::writeRaster(r_sum,
+      filename = file.path(summary_dir, paste0(id, "_QA_binsum_pct_5m.tif")),
+      overwrite = TRUE
+    )
+
+    terra::writeRaster(r_err,
+      filename = file.path(summary_dir, paste0(id, "_QA_binsum_absErr_5m.tif")),
+      overwrite = TRUE
+    )
+  }
+
+  invisible(NULL)
+}
+
+###### Step 10c1 ######
+###### RUN QA: UTM11 ######
+qa_check_bin_pct_sum(utm11_dirs$vertical_bins_5m)
+
+###### Step 10c2 ######
+###### RUN QA: UTM12 ######
+qa_check_bin_pct_sum(utm12_dirs$vertical_bins_5m)
+
+###### Step 11 ######
+###### Rugosity from CHM (SD aggregated to 5m) ######
+
+compute_rugosity_from_chm_folder <- function(chm_folder, rugosity_folder) {
+
+  chm_paths <- list.files(
+    chm_folder,
+    pattern = "_chm\\.(tif|grd)$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  stopifnot(length(chm_paths) > 0)
+
+  for (single_chm_path in chm_paths) {
+
+    chm_1m <- terra::rast(single_chm_path)
+
+    # SD of 1m CHM aggregated to 5m
+    rugosity_sd_5m <- terra::aggregate(chm_1m, fact = 5, fun = sd, na.rm = TRUE)
+
+    base_name <- tools::file_path_sans_ext(basename(single_chm_path))
+
+    terra::writeRaster(
+      rugosity_sd_5m,
+      filename = file.path(rugosity_folder, paste0(base_name, "_rugosity_sd_5m.tif")),
+      overwrite = TRUE
+    )
+  }
+
+  invisible(NULL)
+}
+
+compute_rugosity_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rugosity_5m)
+compute_rugosity_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rugosity_5m)
+
+###### Step 12 ######
+###### Complexity (1m) (BOTH) ######
 
 complex_fun <- function(cluster, ...) {
 
@@ -1735,7 +2029,8 @@ complex_fun <- function(cluster, ...) {
   return(complexity_raster)
 }
 
-########## COMPLEXITY: UTM11 ##########
+###### Step 12a ######
+###### COMPLEXITY: UTM11 ######
 
 lidR::opt_output_files(ctg_norm_utm11) <- file.path(
   utm11_dirs$complexity_res1m,
@@ -1744,7 +2039,8 @@ lidR::opt_output_files(ctg_norm_utm11) <- file.path(
 
 lidR::catalog_apply(ctg_norm_utm11, complex_fun)
 
-########## COMPLEXITY: UTM12 ##########
+###### Step 12b ######
+###### COMPLEXITY: UTM12 ######
 
 lidR::opt_output_files(ctg_norm_utm12) <- file.path(
   utm12_dirs$complexity_res1m,
@@ -1753,7 +2049,8 @@ lidR::opt_output_files(ctg_norm_utm12) <- file.path(
 
 lidR::catalog_apply(ctg_norm_utm12, complex_fun)
 
-#### 12) FINAL QA: PRINT WHERE OUTPUTS WERE SAVED         ####
+###### Step 13 ######
+###### FINAL QA: PRINT WHERE OUTPUTS WERE SAVED ######
 
 cat("\nDONE.\n")
 cat("All UTM11 outputs saved under: ", metrics_utm11_root_dir, "\n")
@@ -1762,6 +2059,7 @@ cat("All UTM12 outputs saved under: ", metrics_utm12_root_dir, "\n")
 cat("\nUTM11 subfolders:\n"); print(utm11_dirs)
 cat("\nUTM12 subfolders:\n"); print(utm12_dirs)
 ```
+
 
 
 # Full Study Area Batched
