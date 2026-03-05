@@ -1752,15 +1752,12 @@ terra::writeRaster(
     terra::values(canopy_cover_rast) <- 0
   } else {
     canopy_cover_rast <- lidR::pixel_metrics(
-      las_cover,
-      ~ {
-        # length(Z) is the number of (first-return) veg points in this cell
+  las_cover,
+  # length(Z) is the number of (first-return) veg points in this cell
         # if none, cover = 0 (not NA)
-        if (length(Z) == 0) return(0)
-        sum(Z >= canopy_height_threshold_m) / length(Z)
-      },
-      res = vertical_res_m
-    )
+        ~ ifelse(length(Z) == 0, 0, sum(Z >= canopy_height_threshold_m) / length(Z)),
+  res = vertical_res_m
+)
 
     if (!terra::compareGeom(template_count, canopy_cover_rast, stopOnError = FALSE)) {
       canopy_cover_rast <- terra::resample(canopy_cover_rast, template_count, method = "near")
