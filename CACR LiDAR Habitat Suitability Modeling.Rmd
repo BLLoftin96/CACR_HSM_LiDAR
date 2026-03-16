@@ -1022,7 +1022,7 @@ catalog_apply(ctg_500_norm, complex_fun)
 
 Looking at QGIS I noticed some descrepancies where some tiles appear in random locations well outside the study area.
 
-# Bug Fix
+# Pipeline Fix
 
 ```{r Check QGIS Descrepancy}
 ########## PRESERVE ORIGINAL FILE LIST (DO NOT OVERWRITE) ##########
@@ -1768,20 +1768,59 @@ cat("\nUTM12 subfolders:\n"); print(utm12_dirs)
 
 Now that the pipeline is defined and tested on a few tiles. We can apply it to our study area with a few adjustments. We can use the *future* package to parallel process the liDAR data and try to work through the pipeline faster. We will start by setting up this process and creating a place to save temp files. Temp files are a just-in-case measure since most of the data is connecting to a network. I will be saving the fully processed tiles in the network drive in case we have to access them later from a different computer.
 
+**Note: Network Drive was full transitioned to saving on computer temporarily.**
+
 ## Setup
 
 ```{r Setup Parallel Processing and Temp Files}
+##### LiDAR Setup #####
+
 # My lidR version uses this for catalog parallelism. This code allows for 8 tiles to be processed at 1 time. 
-options(lidR.cores = 8) # number of tiles processed in parallel
+options(lidR.cores = 10) # number of tiles processed in parallel
 lidR::set_lidr_threads(1) # keep internal threads low to avoid RAM spikes per worker
 
-# Keep temporary files local 
-dir.create("C:/lidar_work/temp", recursive = TRUE, showWarnings = FALSE)
-Sys.setenv(TMPDIR = "C:/lidar_work/temp")
+##### Directory Setup #####
 
-# Create directory to save our data in our network drive
-run_root <- "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run" # creates a base folder that we can come back to
-step_dirs <- c(
+# Local temp directory
+local_temp_directory <- file.path(project_root_directory, "temp")
+dir.create(local_temp_directory, recursive = TRUE, showWarnings = FALSE)
+Sys.setenv(TMPDIR = local_temp_directory)
+
+# Set Root Directory
+project_root_directory <- "C:/Users/brittanieloftin/Desktop/CACR_Proj_Temp"
+setwd(project_root_directory)
+
+# Top-level Directories
+
+top_level_directories <- c(
+  "00_raw_downloads",
+  "01_raw_tiles_selected",
+  "02_tile_index_and_roi",
+  "03_processing",
+  "04_logs",
+  "05_scripts",
+  "temp"
+)
+
+for (single_directory in top_level_directories) {
+  dir.create(
+    file.path(project_root_directory, single_directory),
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+}
+
+# Study Area Run Roots
+
+southhills_run_root_directory <- file.path(
+  project_root_directory, "03_processing", "SouthHills_Run_UTM11"
+)
+
+albion_run_root_directory <- file.path(
+  project_root_directory, "03_processing", "Albion_Run_UTM12"
+)
+
+pipeline_step_directories <- c(
   "01_filtered",
   "02_ground_csf",
   "03_dem",
@@ -1789,11 +1828,28 @@ step_dirs <- c(
   "05_chm",
   "06_metrics",
   "logs"
-) # lists each pipeline step
+)
 
-for (d in step_dirs) {
-  dir.create(file.path(run_root, d), recursive = TRUE, showWarnings = FALSE)
-} # Create a folder for each step 
+for (single_step_directory in pipeline_step_directories) {
+  dir.create(file.path(southhills_run_root_directory, single_step_directory),
+             recursive = TRUE, showWarnings = FALSE)
+
+  dir.create(file.path(albion_run_root_directory, single_step_directory),
+             recursive = TRUE, showWarnings = FALSE)
+}
+
+# RAW TILE DIRECTORIES
+
+southhills_raw_tile_directory <- file.path(
+  project_root_directory, "01_raw_tiles_selected", "SouthHills_raw"
+)
+
+albion_raw_tile_directory <- file.path(
+  project_root_directory, "01_raw_tiles_selected", "Albion_raw"
+)
+
+dir.create(southhills_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
+dir.create(albion_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
 ```
 
 Next we want to direct R to where our files live. As a note, each folder is the entire laz dataset for a single flight. File names are not consistent so we will have to tell R to take any LAZ file from within our network drive (R:/). Our shapefile for our study area is also found in this network drive and we will want to load it in because we only want to spend time on tiles that intersect our study area.
@@ -2903,22 +2959,23 @@ We now have the South Hills and Albions as separate files containing their own f
 
 # Albion (assumes albion_run_root_directory + albion_filtered_output_directory already exist in your session)
 albion_ground_output_directory <- file.path(albion_run_root_directory, "02_ground_csf")
-albion_log_directory           <- file.path(albion_run_root_directory, "logs")
+albion_log_directory <- file.path(albion_run_root_directory, "logs")
 
 # South Hills
-southhills_run_root_directory        <- "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run"
+southhills_run_root_directory <- "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run"
 southhills_filtered_output_directory <- file.path(southhills_run_root_directory, "01_filtered")
-southhills_ground_output_directory   <- file.path(southhills_run_root_directory, "02_ground_csf")
-southhills_log_directory             <- file.path(southhills_run_root_directory, "logs")
+southhills_ground_output_directory <- file.path(southhills_run_root_directory, "02_ground_csf")
+southhills_log_directory <- file.path(southhills_run_root_directory, "logs")
 
-dir.create(albion_ground_output_directory,     recursive = TRUE, showWarnings = FALSE)
-dir.create(albion_log_directory,               recursive = TRUE, showWarnings = FALSE)
+dir.create(albion_ground_output_directory, recursive = TRUE, showWarnings = FALSE)
+dir.create(albion_log_directory, recursive = TRUE, showWarnings = FALSE)
 dir.create(southhills_ground_output_directory, recursive = TRUE, showWarnings = FALSE)
-dir.create(southhills_log_directory,           recursive = TRUE, showWarnings = FALSE)
+dir.create(southhills_log_directory, recursive = TRUE, showWarnings = FALSE)
 
 
 ##### 1) Pre-Classification Checks #####
 
+# List filtered files for each study area
 albion_filtered_files <- list.files(
   albion_filtered_output_directory,
   pattern = "\\.(las|laz)$",
@@ -2933,25 +2990,29 @@ southhills_filtered_files <- list.files(
   ignore.case = TRUE
 )
 
+# Make sure we found files
 stopifnot(length(albion_filtered_files) > 0)
 stopifnot(length(southhills_filtered_files) > 0)
 
+# Make sure files exist
 stopifnot(all(file.exists(albion_filtered_files)))
 stopifnot(all(file.exists(southhills_filtered_files)))
 
+# Simple helper: can we read LAZ/LAS headers?
 header_ok <- function(f) {
   h <- try(lidR::readLASheader(f), silent = TRUE)
   !inherits(h, "try-error")
 }
 
+# Check a sample of the files from each study area befoer launching the run
 stopifnot(all(vapply(albion_filtered_files[1:min(10, length(albion_filtered_files))], header_ok, logical(1))))
 stopifnot(all(vapply(southhills_filtered_files[1:min(10, length(southhills_filtered_files))], header_ok, logical(1))))
 
+# Count existing Classified files
 cat("Albion existing CSF outputs:",
-    length(list.files(albion_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n")
+    length(list.files(albion_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n") # How many files existing
 cat("South Hills existing CSF outputs:",
-    length(list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n")
-
+    length(list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n") # How many files existing
 
 ##### 2) Define CSF algorithm object #####
 
@@ -2965,6 +3026,7 @@ csf_ground_fullArea <- lidR::csf(
 
 ##### 3) Study area run list #####
 
+# This makes it easy to run the same logic on both study areas
 study_area_run_list <- list(
   list(
     study_area_name = "Albion",
@@ -2983,6 +3045,7 @@ study_area_run_list <- list(
 
 ##### 4) Helper: list filtered tiles #####
 
+# Small helper to prevent repeat list.files() later
 list_filtered_tile_paths <- function(filtered_directory_path) {
   list.files(
     path = filtered_directory_path,
@@ -2993,44 +3056,136 @@ list_filtered_tile_paths <- function(filtered_directory_path) {
 }
 
 
-##### 5) Helper: detect valid CSF outputs (resume-safe) #####
-## DONE means:
-##  - matching output exists (stem_csf OR stem_<anything>_csf)
-##  - AND output header is readable (so partial/broken files get re-run)
+##### 5) Helper: rename existing CSF outputs to stable names #####
+## I found that the pipeline was having trouble with the naming scheme that it was trying to generate. It was giving a ID to each tile after the filtering and classification step. This was creating snags in the pipeline as it wasn't connecting the filter tile to the classification that needed to be completed.
+## IMPORTANT:
+## This is the one-time cleanup step that fixes files already written with names like:
+##   tile_filtered_1_csf.las
+##   tile_filtered_2_csf.las
+##
+## and renames them to:
+##   tile_filtered_csf.las
+##
+## This means:
+## - DO NOT manually delete the already processed files
+## - this function renames them in place
+## - if a stable-name version already exists, it skips instead of overwriting
 
-detect_valid_csf_outputs <- function(filtered_tile_paths, ground_dir) {
+rename_csf_outputs_to_stable_names <- function(ground_directory_path) {
 
-  ground_outputs_full <- list.files(
-    ground_dir,
+  existing_csf_output_paths <- list.files(
+    ground_directory_path,
     pattern = "\\.(las|laz)$",
     full.names = TRUE,
     ignore.case = TRUE
   )
 
-  if (length(ground_outputs_full) == 0) {
-    return(rep(FALSE, length(filtered_tile_paths)))
+  # Nothing to do if folder is empty
+  if (length(existing_csf_output_paths) == 0) {
+    message("No CSF outputs found in: ", ground_directory_path)
+    return(invisible(NULL))
   }
 
-  ground_outputs_base <- basename(ground_outputs_full)
-  filtered_stems      <- tools::file_path_sans_ext(basename(filtered_tile_paths))
+  existing_csf_output_base_names <- basename(existing_csf_output_paths)
 
-  has_valid_output <- vapply(filtered_stems, function(stem) {
+  # Identify files that end in _<number>_csf.las or _<number>_csf.laz
+  # Examples:
+  #   tile_filtered_1_csf.las
+  #   tile_filtered_22_csf.laz
+  has_extra_catalog_id_logical <- grepl(
+    "_[0-9]+_csf\\.(las|laz)$",
+    existing_csf_output_base_names,
+    ignore.case = TRUE
+  )
 
-    # Escape regex metacharacters in stem
-    stem_escaped <- gsub("([\\.^$|()\\[\\]{}*+?\\\\])", "\\\\\\1", stem)
+  output_paths_to_rename <- existing_csf_output_paths[has_extra_catalog_id_logical]
 
-    # Match:
-    #   ^stem_csf.las
-    #   ^stem_<anything>_csf.las
-    pattern <- paste0("^", stem_escaped, "(_.*)?_csf\\.(las|laz)$")
+  if (length(output_paths_to_rename) == 0) {
+    message("No CSF outputs need renaming in: ", ground_directory_path)
+    return(invisible(NULL))
+  }
 
-    idx <- which(grepl(pattern, ground_outputs_base, ignore.case = TRUE))
-    if (length(idx) == 0) return(FALSE)
+  for (single_old_path in output_paths_to_rename) {
 
-    # At least one candidate must be readable
-    any(vapply(ground_outputs_full[idx], function(out_path) {
-      h <- try(lidR::readLASheader(out_path), silent = TRUE)
-      !inherits(h, "try-error")
+    single_old_base_name <- basename(single_old_path)
+
+    # Remove only the trailing _<number> immediately before _csf
+    # Example:
+    #   abc_filtered_14_csf.las -> abc_filtered_csf.las
+    single_new_base_name <- sub(
+      "_[0-9]+(_csf\\.(las|laz)$)",
+      "\\1",
+      single_old_base_name,
+      ignore.case = TRUE
+    )
+
+    single_new_path <- file.path(ground_directory_path, single_new_base_name)
+
+    # Safety check:
+    # if the stable target name already exists, skip so we do not overwrite files
+    if (file.exists(single_new_path)) {
+      warning(
+        "Skipping rename because target already exists:\n",
+        "  old: ", single_old_path, "\n",
+        "  new: ", single_new_path
+      )
+      next
+    }
+
+    rename_successful <- file.rename(from = single_old_path, to = single_new_path)
+
+    if (!rename_successful) {
+      warning("Failed to rename: ", single_old_path)
+    }
+  }
+
+  message("Finished renaming CSF outputs in: ", ground_directory_path)
+}
+
+##### 6) One-time rename of already processed CSF outputs #####
+## Run this BEFORE the main loop so all existing outputs are standardized first
+
+rename_csf_outputs_to_stable_names(albion_ground_output_directory)
+rename_csf_outputs_to_stable_names(southhills_ground_output_directory)
+
+
+##### 7) Helper: detect valid CSF outputs (resume-safe, stable naming version) #####
+## DONE means:
+##  - exact expected output exists:
+##      filtered_stem + "_csf.las"
+##      OR filtered_stem + "_csf.laz"
+##  - AND output header is readable
+##
+## This is much safer and simpler than wildcard matching once names are standardized
+
+detect_valid_csf_outputs <- function(filtered_tile_paths, ground_dir) {
+
+  filtered_stems <- tools::file_path_sans_ext(basename(filtered_tile_paths))
+
+  has_valid_output <- vapply(filtered_stems, function(single_filtered_stem) {
+
+    expected_las_output_path <- file.path(
+      ground_dir,
+      paste0(single_filtered_stem, "_csf.las")
+    )
+
+    expected_laz_output_path <- file.path(
+      ground_dir,
+      paste0(single_filtered_stem, "_csf.laz")
+    )
+
+    candidate_output_paths <- c(expected_las_output_path, expected_laz_output_path)
+    candidate_output_paths <- candidate_output_paths[file.exists(candidate_output_paths)]
+
+    # If neither .las nor .laz exists, this tile is not done
+    if (length(candidate_output_paths) == 0) {
+      return(FALSE)
+    }
+
+    # At least one existing candidate must have a readable header
+    any(vapply(candidate_output_paths, function(single_output_path) {
+      single_header <- try(lidR::readLASheader(single_output_path), silent = TRUE)
+      !inherits(single_header, "try-error")
     }, logical(1)))
 
   }, logical(1))
@@ -3039,18 +3194,28 @@ detect_valid_csf_outputs <- function(filtered_tile_paths, ground_dir) {
 }
 
 
-##### 6) Helper: build CSF worker function #####
+##### 8) Helper: build CSF worker function #####
+## This is the function catalog_apply() runs on each tile/chunk.
+## If a tile errors, we write the message to a study-area-specific log file
+## and return NULL so the whole run does not crash immediately.
 
 make_csf_ground_function <- function(study_area_name, log_directory_path, csf_algorithm_object) {
 
   dir.create(log_directory_path, recursive = TRUE, showWarnings = FALSE)
-  csf_error_log_path <- file.path(log_directory_path, paste0(study_area_name, "_csf_ground_errors.txt"))
+
+  csf_error_log_path <- file.path(
+    log_directory_path,
+    paste0(study_area_name, "_csf_ground_errors.txt")
+  )
 
   function(cluster, ...) {
     tryCatch({
 
       las_object <- lidR::readLAS(cluster)
-      if (is.null(las_object) || lidR::is.empty(las_object)) return(NULL)
+
+      if (is.null(las_object) || lidR::is.empty(las_object)) {
+        return(NULL)
+      }
 
       las_object <- lidR::classify_ground(las_object, csf_algorithm_object)
 
@@ -3060,9 +3225,10 @@ make_csf_ground_function <- function(study_area_name, log_directory_path, csf_al
 
       cat(
         format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-        "- ", study_area_name, " CSF ERROR:",
+        "- ", study_area_name, " CSF ERROR: ",
         conditionMessage(e),
         "\n",
+        sep = "",
         file = csf_error_log_path,
         append = TRUE
       )
@@ -3073,7 +3239,55 @@ make_csf_ground_function <- function(study_area_name, log_directory_path, csf_al
 }
 
 
-##### 7) MAIN LOOP: resume where it left off #####
+##### 9) See which South Hills files are still truly missing #####
+## This is just a diagnostic block.
+## It is NOT required for the run, but it is useful for confirming the count
+## after renaming has standardized the old outputs.
+
+southhills_classified_files <- list.files(
+  southhills_ground_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+southhills_filtered_base_names <- tools::file_path_sans_ext(
+  basename(southhills_filtered_files)
+)
+
+southhills_classified_base_names <- tools::file_path_sans_ext(
+  basename(southhills_classified_files)
+)
+
+# Remove trailing "_csf" only
+southhills_classified_base_names_clean <- sub(
+  "_csf$",
+  "",
+  southhills_classified_base_names,
+  ignore.case = TRUE
+)
+
+southhills_missing_base_names <- setdiff(
+  southhills_filtered_base_names,
+  southhills_classified_base_names_clean
+)
+
+southhills_missing_files <- southhills_filtered_files[
+  southhills_filtered_base_names %in% southhills_missing_base_names
+]
+
+cat("South Hills true missing files after rename:", length(southhills_missing_files), "\n")
+head(southhills_missing_files, 20)
+
+##### 10) MAIN LOOP: resume where it left off #####
+## This is the main classification run.
+## IMPORTANT CHANGE:
+## output names now use:
+##   {ORIGINALFILENAME}_csf
+## NOT:
+##   {ORIGINALFILENAME}_{ID}_csf
+##
+## That removes the extra chunk/catalog ID and keeps names stable.
 
 for (single_run in study_area_run_list) {
 
@@ -3097,7 +3311,7 @@ for (single_run in study_area_run_list) {
 
   cat(study_area_name, "filtered tiles found:", length(filtered_tile_paths), "\n")
 
-  # Resume-safe skip logic
+  # Resume-safe skip logic using exact stable names
   already_done_logical <- detect_valid_csf_outputs(filtered_tile_paths, ground_dir)
   remaining_tile_paths <- filtered_tile_paths[!already_done_logical]
 
@@ -3114,17 +3328,24 @@ for (single_run in study_area_run_list) {
     next
   }
 
+  # Read only the remaining tiles into a LAScatalog
   ctg_remaining <- lidR::readLAScatalog(remaining_tile_paths)
+
+  # One file = one processing unit
+  # chunk_size = 0 means use the original files directly
   lidR::opt_chunk_size(ctg_remaining)   <- 0
   lidR::opt_chunk_buffer(ctg_remaining) <- 0
 
-  # Keep naming consistent with existing outputs like:
-  # USGS_..._filtered_260_csf.las
+  # Stable naming:
+  # input:  tile_filtered.las
+  # output: tile_filtered_csf.las
   lidR::opt_output_files(ctg_remaining) <- file.path(
     ground_dir,
-    "{ORIGINALFILENAME}_{ID}_csf"
+    "{ORIGINALFILENAME}_csf"
   )
 
+  # Use multiple cores at the catalog level
+  # Keep lidR internal threads to 1 to avoid nested threading issues
   options(lidR.cores = 8)
   lidR::set_lidr_threads(1)
 
@@ -3140,28 +3361,554 @@ for (single_run in study_area_run_list) {
   cat("\nCSF classification finished for ", study_area_name, ". Outputs in:\n", ground_dir, "\n")
 }
 
+##### SOUTH HILLS MISSING 522 TILES DEBUGGING ###
+# South Hills kept getting stuck in the pipeline and not generating classified tiles
+# Goal: Figure out what is causing the snag since it appears that the naming has been changed and no longer should cause issues. 
 
-##### 8) Sanity checks #####
+#### Debug A) Check whether most recent South Hills classification are readable ####
+
+# List South Hills classified outputs with file info
+southhills_classified_files_info <- file.info(southhills_classified_files)
+
+# Order by modification time, newest first
+southhills_classified_files_ordered <- rownames(
+  southhills_classified_files_info[order(southhills_classified_files_info$mtime, decreasing = TRUE), ]
+)
+
+# Pull the 7 most recently modified outputs
+southhills_last_7_outputs <- southhills_classified_files_ordered[1:min(7, length(southhills_classified_files_ordered))]
+
+# Show them
+southhills_last_7_outputs
+
+# Check whether each of those outputs has a readable LAS header
+southhills_last_7_headers_ok <- vapply(
+  southhills_last_7_outputs,
+  function(single_output_path) {
+    single_header <- try(lidR::readLASheader(single_output_path), silent = TRUE)
+    !inherits(single_header, "try-error")
+  },
+  logical(1)
+)
+
+# Print result
+data.frame(
+  output_path = southhills_last_7_outputs,
+  header_ok   = southhills_last_7_headers_ok
+)
+
+#### Debug B) Refresh the South Hills classified file list AFTER rename ####
+
+southhills_classified_files <- list.files(
+  southhills_ground_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+length(southhills_classified_files)
+head(basename(southhills_classified_files), 20)
+
+# Check if any old naming still exists
+
+southhills_old_style_names <- list.files(
+  southhills_ground_output_directory,
+  pattern = "_[0-9]+_csf\\.(las|laz)$",
+  full.names = FALSE,
+  ignore.case = TRUE
+)
+
+cat("Old-style South Hills names still present:", length(southhills_old_style_names), "\n")
+head(southhills_old_style_names, 20)
+
+# Are new names stable 
+
+head(
+  list.files(
+    southhills_ground_output_directory,
+    pattern = "_csf\\.(las|laz)$",
+    full.names = FALSE,
+    ignore.case = TRUE
+  ),
+  20
+)
+
+#### Debug C) Rebuild South Hills remaining tile list from scratch AFTER rename ####
+
+southhills_filtered_files <- list.files(
+  southhills_filtered_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+southhills_already_done_logical <- detect_valid_csf_outputs(
+  filtered_tile_paths = southhills_filtered_files,
+  ground_dir          = southhills_ground_output_directory
+)
+
+southhills_remaining_tile_paths <- southhills_filtered_files[!southhills_already_done_logical]
+
+cat("South Hills tiles already done:", sum(southhills_already_done_logical), "\n")
+cat("South Hills tiles remaining   :", length(southhills_remaining_tile_paths), "\n")
+
+head(southhills_remaining_tile_paths, 20)
+
+#### Debug D) Manually test the first remaining South Hills tile ####
+
+southhills_test_tile_path <- southhills_remaining_tile_paths[1]
+southhills_test_tile_path
+
+southhills_test_output_path <- file.path(
+  southhills_ground_output_directory,
+  paste0(tools::file_path_sans_ext(basename(southhills_test_tile_path)), "_csf.las")
+)
+
+southhills_test_output_path
+
+# Read one tile manually
+southhills_test_las <- lidR::readLAS(southhills_test_tile_path)
+
+# Check that it loaded
+is.null(southhills_test_las)
+lidR::is.empty(southhills_test_las)
+
+if (!is.null(southhills_test_las) && !lidR::is.empty(southhills_test_las)) {
+  print(southhills_test_las)
+  cat("Point count:", lidR::npoints(southhills_test_las), "\n")
+}
+
+# Run CSF manually on one tile
+#southhills_test_las <- lidR::classify_ground(southhills_test_las, csf_ground_fullArea)
+
+# Average Tile took 20 - 30 minutes to process if it takes longer we should cancel the run --> Failed
+
+
+##### Debug E) Identify and manage duplicated spatial tile codes #####
+
+filtered_base <- basename(southhills_filtered_files)
+
+filtered_stem <- tools::file_path_sans_ext(filtered_base)
+
+# remove "_filtered"
+filtered_core <- sub("_filtered$", "", filtered_stem)
+
+# remove trailing flight ID
+spatial_tile <- sub("_[0-9]+$", "", filtered_core)
+
+tile_table <- table(spatial_tile)
+
+duplicated_tiles <- names(tile_table[tile_table > 1])
+
+length(duplicated_tiles)
+
+# Examined in QGIS some appear to be partial overlaps which is why the name duplicates across flights, but there are some that do not make sense like which in CloudCompare appear to be the same area USGS_LPC_ID_SouthernID_2018_D19_11TQG350875_474_filtered and USGS_LPC_ID_SouthernID_2018_D19_11TQG350875_151_filtered
+
+# Build inventory table for REMAINING South Hills files only
+## GOAL:
+## Create a table for the 522 remaining files that includes:
+## - full path
+## - filename
+## - spatial tile code
+## - source suffix
+## - xmin/xmax/ymin/ymax from LAS header
+##
+## IMPORTANT:
+## Files with the same spatial tile code are only "candidates" for overlap review.
+## We will compare extents before deciding anything.
+
+southhills_remaining_inventory <- data.frame(
+  filtered_path = southhills_remaining_tile_paths,
+  filtered_base = basename(southhills_remaining_tile_paths),
+  stringsAsFactors = FALSE
+)
+
+# Remove extension
+southhills_remaining_inventory$filtered_stem <- tools::file_path_sans_ext(
+  southhills_remaining_inventory$filtered_base
+)
+
+# Remove trailing "_filtered"
+southhills_remaining_inventory$stem_no_filtered <- sub(
+  "_filtered$",
+  "",
+  southhills_remaining_inventory$filtered_stem
+)
+
+# Extract trailing numeric suffix
+southhills_remaining_inventory$source_suffix <- sub(
+  "^.*_([0-9]+)$",
+  "\\1",
+  southhills_remaining_inventory$stem_no_filtered
+)
+
+# Remove trailing suffix to get the shared spatial code
+southhills_remaining_inventory$spatial_tile_code <- sub(
+  "_[0-9]+$",
+  "",
+  southhills_remaining_inventory$stem_no_filtered
+)
+
+# Helper function: read LAS header safely and pull extent info
+read_extent_from_header <- function(single_file_path) {
+
+  single_header <- try(lidR::readLASheader(single_file_path), silent = TRUE)
+
+  if (inherits(single_header, "try-error")) {
+    return(data.frame(
+      xmin = NA_real_,
+      xmax = NA_real_,
+      ymin = NA_real_,
+      ymax = NA_real_,
+      npoints_header = NA_real_,
+      header_ok = FALSE
+    ))
+  }
+
+  data.frame(
+    xmin = single_header@PHB[["Min X"]],
+    xmax = single_header@PHB[["Max X"]],
+    ymin = single_header@PHB[["Min Y"]],
+    ymax = single_header@PHB[["Max Y"]],
+    npoints_header = single_header@PHB[["Number of point records"]],
+    header_ok = TRUE
+  )
+}
+
+# Read extent info for all remaining files
+southhills_remaining_extent_list <- lapply(
+  southhills_remaining_inventory$filtered_path,
+  read_extent_from_header
+)
+
+southhills_remaining_extent_table <- do.call(
+  rbind,
+  southhills_remaining_extent_list
+)
+
+# Combine into one inventory table
+southhills_remaining_inventory <- cbind(
+  southhills_remaining_inventory,
+  southhills_remaining_extent_table
+)
+
+# Count how many files share each spatial tile code
+southhills_remaining_inventory$spatial_tile_count <- ave(
+  southhills_remaining_inventory$spatial_tile_code,
+  southhills_remaining_inventory$spatial_tile_code,
+  FUN = length
+)
+
+# Quick summary
+cat("Remaining South Hills files:", nrow(southhills_remaining_inventory), "\n")
+cat("Headers readable:", sum(southhills_remaining_inventory$header_ok), "\n")
+cat("Repeated spatial tile codes:",
+    length(unique(southhills_remaining_inventory$spatial_tile_code[
+      southhills_remaining_inventory$spatial_tile_count > 1
+    ])), "\n")
+
+#  Save South Hills remaining extent inventory #####
+
+write.csv(
+  southhills_remaining_inventory,
+  file.path(southhills_log_directory, "SouthHills_remaining_extent_inventory.csv"),
+  row.names = FALSE
+)
+
+#  Subset repeated spatial tile code groups only #####
+## These are the groups that need extent comparison
+
+southhills_repeated_groups_inventory <- southhills_remaining_inventory[
+  southhills_remaining_inventory$spatial_tile_count > 1,
+]
+
+cat("Files in repeated-code groups:", nrow(southhills_repeated_groups_inventory), "\n")
+cat("Number of repeated-code groups:",
+    length(unique(southhills_repeated_groups_inventory$spatial_tile_code)), "\n")
+
+head(
+  southhills_repeated_groups_inventory[
+    order(southhills_repeated_groups_inventory$spatial_tile_code),
+    c("filtered_base", "spatial_tile_code", "source_suffix", "xmin", "xmax", "ymin", "ymax", "npoints_header")
+  ],
+  20
+)
+
+#  Compare extents within repeated spatial tile code groups
+## GOAL:
+## For each repeated-code group, compare bounding boxes.
+##
+## We calculate:
+## - area of file A
+## - area of file B
+## - overlap area
+## - overlap proportion relative to the smaller file
+##
+## INTERPRETATION:
+## overlap_proportion_near_1 = almost same footprint
+## moderate overlap          = partial overlap
+## near_0                    = likely not meaningfully overlapping
+
+calculate_bbox_overlap <- function(xmin1, xmax1, ymin1, ymax1,
+                                   xmin2, xmax2, ymin2, ymax2) {
+
+  x_overlap <- max(0, min(xmax1, xmax2) - max(xmin1, xmin2))
+  y_overlap <- max(0, min(ymax1, ymax2) - max(ymin1, ymin2))
+
+  overlap_area <- x_overlap * y_overlap
+
+  area1 <- (xmax1 - xmin1) * (ymax1 - ymin1)
+  area2 <- (xmax2 - xmin2) * (ymax2 - ymin2)
+
+  smaller_area <- min(area1, area2)
+
+  overlap_proportion_smaller <- if (smaller_area > 0) overlap_area / smaller_area else NA_real_
+
+  data.frame(
+    area1 = area1,
+    area2 = area2,
+    overlap_area = overlap_area,
+    overlap_proportion_smaller = overlap_proportion_smaller
+  )
+}
+
+southhills_overlap_results <- list()
+
+repeated_codes <- unique(southhills_repeated_groups_inventory$spatial_tile_code)
+
+for (single_code in repeated_codes) {
+
+  single_group <- southhills_repeated_groups_inventory[
+    southhills_repeated_groups_inventory$spatial_tile_code == single_code,
+  ]
+
+  # Compare every pair within the group
+  if (nrow(single_group) >= 2) {
+
+    group_pairs <- utils::combn(seq_len(nrow(single_group)), 2)
+
+    for (pair_index in seq_len(ncol(group_pairs))) {
+
+      i <- group_pairs[1, pair_index]
+      j <- group_pairs[2, pair_index]
+
+      overlap_stats <- calculate_bbox_overlap(
+        xmin1 = single_group$xmin[i],
+        xmax1 = single_group$xmax[i],
+        ymin1 = single_group$ymin[i],
+        ymax1 = single_group$ymax[i],
+        xmin2 = single_group$xmin[j],
+        xmax2 = single_group$xmax[j],
+        ymin2 = single_group$ymin[j],
+        ymax2 = single_group$ymax[j]
+      )
+
+      southhills_overlap_results[[length(southhills_overlap_results) + 1]] <- data.frame(
+        spatial_tile_code = single_code,
+        file_a = single_group$filtered_base[i],
+        suffix_a = single_group$source_suffix[i],
+        file_b = single_group$filtered_base[j],
+        suffix_b = single_group$source_suffix[j],
+        xmin_a = single_group$xmin[i],
+        xmax_a = single_group$xmax[i],
+        ymin_a = single_group$ymin[i],
+        ymax_a = single_group$ymax[i],
+        xmin_b = single_group$xmin[j],
+        xmax_b = single_group$xmax[j],
+        ymin_b = single_group$ymin[j],
+        ymax_b = single_group$ymax[j],
+        area_a = overlap_stats$area1,
+        area_b = overlap_stats$area2,
+        overlap_area = overlap_stats$overlap_area,
+        overlap_proportion_smaller = overlap_stats$overlap_proportion_smaller,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+}
+
+southhills_overlap_results_table <- do.call(rbind, southhills_overlap_results)
+
+# Sort so strongest overlaps appear first
+southhills_overlap_results_table <- southhills_overlap_results_table[
+  order(-southhills_overlap_results_table$overlap_proportion_smaller,
+        southhills_overlap_results_table$spatial_tile_code),
+]
+
+head(southhills_overlap_results_table, 20)
+
+# Save overlap comparison results #####
+
+write.csv(
+  southhills_overlap_results_table,
+  file.path(southhills_log_directory, "SouthHills_repeated_group_overlap_comparison.csv"),
+  row.names = FALSE
+)
+
+# Build list of remaining files with non-repeated spatial tile codes #####
+
+southhills_remaining_unique_paths <- southhills_remaining_inventory$filtered_path[
+  southhills_remaining_inventory$spatial_tile_count == 1
+]
+
+cat("Remaining files with non-repeated spatial tile code:",
+    length(southhills_remaining_unique_paths), "\n")
+
+# We have 364 tiles that are not overlapped out of our missing 522 tiles. 158 of these more inspection
+
+# Check overlap results table size
+
+nrow(southhills_overlap_results_table)
+head(southhills_overlap_results_table[, c(
+  "spatial_tile_code",
+  "file_a",
+  "file_b",
+  "overlap_proportion_smaller"
+)], 20)
+
+# Helper: serial CSF run for supplied file list #####
+## GOAL:
+## Run one file at a time, write a log entry for each file,
+## and avoid catalog_apply() while debugging South Hills.
+
+run_csf_serial <- function(filtered_tile_paths, ground_directory_path, csf_algorithm_object, log_path) {
+
+  for (single_tile_path in filtered_tile_paths) {
+
+    single_tile_stem <- tools::file_path_sans_ext(basename(single_tile_path))
+
+    single_output_path <- file.path(
+      ground_directory_path,
+      paste0(single_tile_stem, "_csf.las")
+    )
+
+    # Skip if output already exists and has a readable header
+    if (file.exists(single_output_path)) {
+      single_existing_header <- try(lidR::readLASheader(single_output_path), silent = TRUE)
+
+      if (!inherits(single_existing_header, "try-error")) {
+        cat(
+          format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+          " - SKIP already complete: ",
+          single_tile_path, "\n",
+          sep = "",
+          file = log_path,
+          append = TRUE
+        )
+        next
+      }
+    }
+
+    cat(
+      format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+      " - START: ",
+      single_tile_path, "\n",
+      sep = "",
+      file = log_path,
+      append = TRUE
+    )
+
+    tryCatch({
+
+      single_las <- lidR::readLAS(single_tile_path)
+
+      if (is.null(single_las) || lidR::is.empty(single_las)) {
+        cat(
+          format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+          " - EMPTY: ",
+          single_tile_path, "\n",
+          sep = "",
+          file = log_path,
+          append = TRUE
+        )
+        next
+      }
+
+      single_elapsed_time <- system.time({
+        single_las <- lidR::classify_ground(single_las, csf_algorithm_object)
+      })
+
+      lidR::writeLAS(single_las, single_output_path)
+
+      cat(
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        " - DONE: ",
+        single_tile_path,
+        " --- elapsed_seconds=",
+        round(single_elapsed_time["elapsed"], 2),
+        "\n",
+        sep = "",
+        file = log_path,
+        append = TRUE
+      )
+
+    }, error = function(e) {
+
+      cat(
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        " - ERROR: ",
+        single_tile_path,
+        " --- ",
+        conditionMessage(e), "\n",
+        sep = "",
+        file = log_path,
+        append = TRUE
+      )
+    })
+  }
+}
+
+summary(
+  southhills_remaining_inventory$npoints_header[
+    southhills_remaining_inventory$spatial_tile_count == 1
+  ]
+)
+
+# Run CRS on on non-repeated remaining South Hills files only #####
+
+southhills_unique_serial_log_path <- file.path(
+  southhills_log_directory,
+  "SouthHills_unique_remaining_csf_serial_log.txt"
+)
+
+run_csf_serial(
+  filtered_tile_paths   = southhills_remaining_unique_paths,
+  ground_directory_path = southhills_ground_output_directory,
+  csf_algorithm_object  = csf_ground_fullArea,
+  log_path              = southhills_unique_serial_log_path
+)
+
+length(list.files(
+  southhills_ground_output_directory,
+  pattern = "\\.(las|laz)$",
+  ignore.case = TRUE
+))
+
+tail(readLines(southhills_unique_serial_log_path, warn = FALSE), 20)
+
+##### 11) Sanity checks after the main run #####
 
 cat("\n--- FINAL OUTPUT COUNTS ---\n")
 cat("South Hills CSF outputs:",
-    length(list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n")
+    length(list.files(southhills_ground_output_directory, pattern = "\\.(las|laz)$", ignore.case = TRUE)), "\n")
 cat("Albion CSF outputs     :",
-    length(list.files(albion_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n")
+    length(list.files(albion_ground_output_directory, pattern = "\\.(las|laz)$", ignore.case = TRUE)), "\n")
 
-# Confirm one South Hills output has ground class points
-one_out <- list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", full.names=TRUE, ignore.case=TRUE)[1]
-if (!is.na(one_out) && file.exists(one_out)) {
-  las_chk <- lidR::readLAS(one_out)
-  print(table(las_chk$Classification))
+# Confirm one South Hills output has ground-class points
+southhills_output_files <- list.files(
+  southhills_ground_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+if (length(southhills_output_files) > 0) {
+  one_out <- southhills_output_files[1]
+
+  if (!is.na(one_out) && file.exists(one_out)) {
+    las_chk <- lidR::readLAS(one_out)
+    print(table(las_chk$Classification))
+  }
 }
-
-
-list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", full.names=FALSE) |> length()
-list.files(albion_ground_output_directory,     pattern="\\.(las|laz)$", full.names=FALSE) |> length()
-
-one_out <- list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", full.names=TRUE)[1]
-las_chk <- lidR::readLAS(one_out)
-table(las_chk$Classification)
 ```
 
