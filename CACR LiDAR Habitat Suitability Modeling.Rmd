@@ -94,6 +94,7 @@ library(future.apply)
 library(progressr)
 library(data.table)
 library(stringr)
+library(tools)
 ```
 
 # Data Inspection
@@ -2150,8 +2151,52 @@ for (single_step_directory in pipeline_step_directories) {
              recursive = TRUE, showWarnings = FALSE)
 }
 
-# RAW TILE DIRECTORIES
+```
 
+Next we want to direct R to where our files live. As a note, each folder is the entire laz dataset for a single flight. File names are not consistent so we will have to tell R to take any LAZ file from within our network drive (R:/). Our shapefile for our study area is also found in this network drive and we will want to load it in because we only want to spend time on tiles that intersect our study area.
+
+
+
+## Find Tiles and Keep Those in Study Area
+
+We want to read in the study area shapefile then repair any invalid geometry (if needed). We can then read in the tile keys and separate them out by South Hills and Albion as they'll need to be handled individually due to the CRS of the LAZ files.
+
+```{r Find Tiles - Study Area}
+##### Define Paths to Files #####
+# Path to Study Area
+study_area_shapefile_path <- file.path(
+  project_root_directory,
+  "02_tile_index_and_roi",
+  "StudyArea.shp"
+)
+
+# Path to Tile Index
+tile_index_shapefile_paths <- c(
+  file.path(project_root_directory, "02_tile_index_and_roi", "SouthernID_2018_12.shp"),
+  file.path(project_root_directory, "02_tile_index_and_roi", "SouthernID_2018_14.shp"),
+  file.path(project_root_directory, "02_tile_index_and_roi", "SouthernID_2018_15.shp"),
+  file.path(project_root_directory, "02_tile_index_and_roi", "SouthernID_2018_17.shp"),
+  file.path(project_root_directory, "02_tile_index_and_roi", "NorthWest_Elko_2020.shp")
+)
+
+# Confirm they exist and aren't missing or misnamed
+if (!file.exists(study_area_shapefile_path)) {
+  stop("Study area shapefile not found: ", study_area_shapefile_path)
+}
+
+# Confirm all tile index shapefiles exist
+missing_tile_index_paths <- tile_index_shapefile_paths[!file.exists(tile_index_shapefile_paths)]
+
+if (length(missing_tile_index_paths) > 0) {
+  stop(
+    "The following tile index shapefiles are missing:\n",
+    paste(missing_tile_index_paths, collapse = "\n")
+  )
+}
+
+# Define Raw Tile Output Folder 
+
+# These are the folders where you will place ONLY the selected raw tiles
 southhills_raw_tile_directory <- file.path(
   project_root_directory, "01_raw_tiles_selected", "SouthHills_raw"
 )
@@ -2162,39 +2207,653 @@ albion_raw_tile_directory <- file.path(
 
 dir.create(southhills_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
 dir.create(albion_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
-```
 
-Next we want to direct R to where our files live. As a note, each folder is the entire laz dataset for a single flight. File names are not consistent so we will have to tell R to take any LAZ file from within our network drive (R:/). Our shapefile for our study area is also found in this network drive and we will want to load it in because we only want to spend time on tiles that intersect our study area.
+##### Read Study Area #####
 
-## Load Data
+# Read the study area shapefile
+study_area_sf <- st_read(study_area_shapefile_path, quiet = TRUE)
 
-```{r Load Tiles and Shapefiles}
-# Save pathway to the shapefile (note: there are two polygons)
-study_area_path <- "R:/Shapefiles/StudyArea.shp"
+# Repair invalid geometry if needed
+study_area_sf <- st_make_valid(study_area_sf)
 
-# Load Study area shapefile
-study_area <- st_read(study_area_path, quiet = TRUE)
+# Convert multipart geometry into explicit polygon rows if needed
+study_area_sf <- st_cast(study_area_sf, "POLYGON", warn = FALSE)
 
-# Validate the study area
-study_area <- st_make_valid(study_area)
-
-study_area <- st_union(study_area)
+# Quick check
+print(study_area_sf)
 
 
-# Root where ALL flights/tiles live (this is across multiple folders)
-lidar_root <- "R:/"
+##### Check Study Area Attribute Names #####
 
-# Recursively find ALL LAZ/LAS tiles in the R network drive
-tile_files <- list.files(
-  lidar_root,
-  pattern = "\\.(laz|las)$",
-  recursive = TRUE, 
-  full.names = TRUE
+# This lets you confirm what the polygon name field is actually called as we want to select values like "Albion" and "South Hills" if they exist to preserve naming 
+print(names(study_area_sf))
+
+##### Split Study Area Into South Hills And Albion #####
+
+southhills_roi_sf <- study_area_sf[study_area_sf$Section == "South Hills", ]
+albion_roi_sf     <- study_area_sf[study_area_sf$Section == "Albion", ]
+
+# Hard stop if the selections do not behave as expected
+if (nrow(southhills_roi_sf) != 1) {
+  stop("South Hills ROI selection did not return exactly 1 polygon.")
+}
+
+if (nrow(albion_roi_sf) != 1) {
+  stop("Albion ROI selection did not return exactly 1 polygon.")
+}
+
+
+##### Build Helper Function To Read Tile Index Shapefile #####
+
+# The purpose of this helper function is to read one tile index shapefile, add metadata about which flight it came from, and return a consistent sf object.
+
+read_tile_index_with_metadata <- function(single_tile_index_path) {
+
+  # Read the tile index
+  single_tile_index_sf <- st_read(single_tile_index_path, quiet = TRUE)
+
+  # Repair geometry if needed
+  single_tile_index_sf <- st_make_valid(single_tile_index_sf)
+
+  # Add the source shapefile name so we always know which flight this came from
+  single_tile_index_sf$tile_index_source_file <- basename(single_tile_index_path)
+
+  # Add a simpler flight label based on the shapefile file name
+  single_tile_index_sf$flight_name <- file_path_sans_ext(basename(single_tile_index_path))
+
+  single_tile_index_sf
+}
+
+
+##### Read All Tile Index Shapefiles #####
+
+# Read every tile index shapefile and keep them in a list first
+tile_index_sf_list <- lapply(
+  tile_index_shapefile_paths,
+  read_tile_index_with_metadata
 )
 
-length(tile_files)
-tile_files[1:10]
+# Name the list elements for readability
+names(tile_index_sf_list) <- file_path_sans_ext(basename(tile_index_shapefile_paths))
+
+# Quick preview of what was read
+print(names(tile_index_sf_list))
+
+
+##### Inspect Tile Index Attribute Names #####
+
+# This helps identify which field contains the tile code such as 11TQG335770
+for (single_name in names(tile_index_sf_list)) {
+  cat("\n====================\n")
+  cat("Tile index:", single_name, "\n")
+  cat("====================\n")
+  print(names(tile_index_sf_list[[single_name]]))
+}
+
+# After running this block, we need to identify the field in the tile index that stores
+# the spatial tile code. Here we need to use Tilename
+
+##### Define Tile Code Field #####
+
+# Tell R where the Tile Code is found
+tile_code_field_name <- "Tilename"
+
+# Verify that every tile index contains this field
+tile_code_field_missing <- vapply(
+  tile_index_sf_list,
+  function(single_sf) !(tile_code_field_name %in% names(single_sf)),
+  logical(1)
+)
+
+if (any(tile_code_field_missing)) {
+  stop(
+    "The tile code field '", tile_code_field_name,
+    "' was not found in these tile index shapefiles:\n",
+    paste(names(tile_index_sf_list)[tile_code_field_missing], collapse = "\n")
+  )
+}
+
+##### Standardize Tile Index Attribute Tables #####
+
+# Here we will convert each tile index to a standard schema:
+# - flight_name
+# - tile_index_source_file
+# - tile_code
+# - geometry
+#
+# This makes later joining and counting much easier.
+
+standardized_tile_index_sf_list <- lapply(tile_index_sf_list, function(single_sf) {
+
+  # Copy the source field into a clean common field name
+  single_sf$tile_code <- as.character(single_sf[[tile_code_field_name]])
+
+  # Remove whitespace just in case
+  single_sf$tile_code <- trimws(single_sf$tile_code)
+
+  single_sf[, c("flight_name", "tile_index_source_file", "tile_code", attr(single_sf, "sf_column"))]
+})
+
+##### Preview Standardized Tile Index Layers #####
+
+# Because the tile indexes are in different CRS, we will want to preview them one at a time.
+
+for (single_name in names(standardized_tile_index_sf_list)) {
+
+  cat("\n====================\n")
+  cat("Standardized tile index:", single_name, "\n")
+  cat("====================\n")
+
+  print(
+    standardized_tile_index_sf_list[[single_name]][
+      1:min(5, nrow(standardized_tile_index_sf_list[[single_name]])),
+    ]
+  )
+}
+
+##### Intersect Tile Index With South Hills ROI #####
+
+# We transform the ROI into the CRS of each tile index before intersecting.
+# Since each shapefile may have its own CRS, we do the selection flight-by-flight.
+
+southhills_selected_list <- lapply(standardized_tile_index_sf_list, function(single_tile_index_sf) {
+
+  # Transform South Hills ROI into the CRS used by this tile index
+  southhills_roi_in_tile_crs <- st_transform(
+    southhills_roi_sf,
+    st_crs(single_tile_index_sf)
+  )
+
+  # Keep only the intersecting tiles
+  selected_sf <- single_tile_index_sf[
+    lengths(st_intersects(single_tile_index_sf, southhills_roi_in_tile_crs)) > 0,
+  ]
+
+  # If this flight contributes no South Hills tiles, return NULL
+  if (nrow(selected_sf) == 0) {
+    return(NULL)
+  }
+
+  # Add study area label
+  selected_sf$study_area_name <- rep("SouthHills", nrow(selected_sf))
+
+  # Add CRS metadata for later processing-group definition
+  selected_sf$crs_name <- rep(st_crs(single_tile_index_sf)$Name, nrow(selected_sf))
+  selected_sf$crs_epsg <- rep(st_crs(single_tile_index_sf)$epsg, nrow(selected_sf))
+
+  selected_sf
+})
+
+
+##### Intersect Tile Index With Albion ROI #####
+
+# Same logic as above, but for Albion
+
+albion_selected_list <- lapply(standardized_tile_index_sf_list, function(single_tile_index_sf) {
+
+  # Transform Albion ROI into the CRS used by this tile index
+  albion_roi_in_tile_crs <- st_transform(
+    albion_roi_sf,
+    st_crs(single_tile_index_sf)
+  )
+
+  # Keep only the intersecting tiles
+  selected_sf <- single_tile_index_sf[
+    lengths(st_intersects(single_tile_index_sf, albion_roi_in_tile_crs)) > 0,
+  ]
+
+  # If this flight contributes no Albion tiles, return NULL
+  if (nrow(selected_sf) == 0) {
+    return(NULL)
+  }
+
+  # Add study area label
+  selected_sf$study_area_name <- rep("Albion", nrow(selected_sf))
+
+  # Add CRS metadata for later processing-group definition
+  selected_sf$crs_name <- rep(st_crs(single_tile_index_sf)$Name, nrow(selected_sf))
+  selected_sf$crs_epsg <- rep(st_crs(single_tile_index_sf)$epsg, nrow(selected_sf))
+
+  selected_sf
+})
+
+##### Remove NULL Entries #####
+
+# Flights with 0 intersecting tiles returned NULL above, so remove them now
+southhills_selected_list <- southhills_selected_list[!vapply(southhills_selected_list, is.null, logical(1))]
+albion_selected_list     <- albion_selected_list[!vapply(albion_selected_list, is.null, logical(1))]
+
+##### Combine Selected Tiles As Non-Spatial Tables #####
+
+southhills_selected_tiles_table <- rbindlist(
+  lapply(southhills_selected_list, function(single_sf) {
+    as.data.table(st_drop_geometry(single_sf))
+  }),
+  fill = TRUE
+)
+
+albion_selected_tiles_table <- rbindlist(
+  lapply(albion_selected_list, function(single_sf) {
+    as.data.table(st_drop_geometry(single_sf))
+  }),
+  fill = TRUE
+)
+
+
+##### Count Selected Tiles By Study Area, Flight, And CRS #####
+
+southhills_counts_by_flight_crs_table <- southhills_selected_tiles_table[
+  , .(n_tiles = .N),
+  by = .(study_area_name, flight_name, crs_name, crs_epsg)
+][order(study_area_name, flight_name)]
+
+albion_counts_by_flight_crs_table <- albion_selected_tiles_table[
+  , .(n_tiles = .N),
+  by = .(study_area_name, flight_name, crs_name, crs_epsg)
+][order(study_area_name, flight_name)]
+
+cat("\nSouth Hills selected tile counts by flight and CRS:\n")
+print(southhills_counts_by_flight_crs_table)
+
+cat("\nAlbion selected tile counts by flight and CRS:\n")
+print(albion_counts_by_flight_crs_table)
+
+##### Combine Selected Tiles Into One Manifest #####
+# Combine the South Hills and Albion selected-tile tables into one master table.
+# We will add CRS grouping and processing-group logic before saving the final locked manifest.
+
+selected_tile_manifest_table <- rbindlist(
+  list(southhills_selected_tiles_table, albion_selected_tiles_table),
+  fill = TRUE
+)
+
+
+##### Define CRS Group #####
+# Convert verbose CRS text into a simple label we can use for grouping runs.
+
+selected_tile_manifest_table[, crs_group := fifelse(
+  grepl("UTM zone 11N", crs_name, fixed = TRUE),
+  "UTM11",
+  fifelse(
+    grepl("UTM zone 12N", crs_name, fixed = TRUE),
+    "UTM12",
+    "OTHER"
+  )
+)]
+
+print(selected_tile_manifest_table[, .N, by = .(study_area_name, crs_group)][order(study_area_name, crs_group)])
+
+
+##### Define Processing Group #####
+# This is the actual run-level grouping for extraction and LiDAR processing.
+
+selected_tile_manifest_table[, processing_group := paste0(study_area_name, "_Run_", crs_group)]
+
+print(selected_tile_manifest_table[, .N, by = processing_group][order(processing_group)])
+
+
+##### Define Processing-Group Raw Tile Folders #####
+
+southhills_utm11_raw_tile_directory <- file.path(
+  project_root_directory, "01_raw_tiles_selected", "SouthHills_raw_UTM11"
+)
+
+southhills_utm12_raw_tile_directory <- file.path(
+  project_root_directory, "01_raw_tiles_selected", "SouthHills_raw_UTM12"
+)
+
+albion_utm12_raw_tile_directory <- file.path(
+  project_root_directory, "01_raw_tiles_selected", "Albion_raw_UTM12"
+)
+
+dir.create(southhills_utm11_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
+dir.create(southhills_utm12_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
+dir.create(albion_utm12_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
+
+
+##### Assign Raw Tile Directory By Processing Group #####
+
+selected_tile_manifest_table[
+  processing_group == "SouthHills_Run_UTM11",
+  study_area_raw_directory := southhills_utm11_raw_tile_directory
+]
+
+selected_tile_manifest_table[
+  processing_group == "SouthHills_Run_UTM12",
+  study_area_raw_directory := southhills_utm12_raw_tile_directory
+]
+
+selected_tile_manifest_table[
+  processing_group == "Albion_Run_UTM12",
+  study_area_raw_directory := albion_utm12_raw_tile_directory
+]
+
+
+##### Reorder Manifest Columns #####
+
+preferred_manifest_column_order <- c(
+  "study_area_name",
+  "flight_name",
+  "tile_index_source_file",
+  "tile_code",
+  "crs_name",
+  "crs_epsg",
+  "crs_group",
+  "processing_group",
+  "study_area_raw_directory"
+)
+
+existing_manifest_columns <- intersect(
+  preferred_manifest_column_order,
+  names(selected_tile_manifest_table)
+)
+
+remaining_manifest_columns <- setdiff(
+  names(selected_tile_manifest_table),
+  existing_manifest_columns
+)
+
+setcolorder(
+  selected_tile_manifest_table,
+  c(existing_manifest_columns, remaining_manifest_columns)
+)
+
+##### QA Check Raw Directory Assignment #####
+
+print(
+  selected_tile_manifest_table[
+    , .(
+      n_tiles = .N,
+      n_missing_raw_dir = sum(is.na(study_area_raw_directory))
+    ),
+    by = .(processing_group, study_area_raw_directory)
+  ][order(processing_group)]
+)
+
+##### QA Check For Any Unassigned Rows #####
+
+cat("Rows with missing raw directory:", 
+    selected_tile_manifest_table[is.na(study_area_raw_directory), .N], "\n")
+
+##### Preview Final Locked Manifest #####
+
+print(selected_tile_manifest_table[1:min(20, nrow(selected_tile_manifest_table))])
+
+
+##### Save Final Locked Manifest #####
+
+fwrite(
+  selected_tile_manifest_table,
+  file.path(project_root_directory, "04_logs", "selected_tile_manifest.csv")
+)
+
+saveRDS(
+  selected_tile_manifest_table,
+  file.path(project_root_directory, "04_logs", "selected_tile_manifest.rds")
+)
+
+##### Compare Counts To Expected QGIS Totals #####
+# Use the expected values that we have from QGIS
+expected_counts_table <- data.table(
+  flight_name = c(
+    "SouthernID_2018_12",
+    "SouthernID_2018_14",
+    "SouthernID_2018_15",
+    "SouthernID_2018_17",
+    "NorthWest_Elko_2020"
+  ),
+  expected_n_tiles = c(418, 33, 42, 199, 245)
+)
+
+# Count observed totals across both study areas
+observed_counts_table <- selected_tile_manifest_table[
+  , .(observed_n_tiles = .N),
+  by = flight_name
+]
+
+# Join expected vs observed
+count_check_table <- merge(
+  expected_counts_table,
+  observed_counts_table,
+  by = "flight_name",
+  all = TRUE
+)
+
+# Difference column
+count_check_table[, difference := observed_n_tiles - expected_n_tiles]
+
+# Order rows for readability
+setorder(count_check_table, flight_name)
+
+cat("\nExpected vs observed tile counts:\n")
+print(count_check_table)
+
+# Save audit table
+fwrite(
+  count_check_table,
+  file.path(project_root_directory, "04_logs", "selected_tile_count_check.csv")
+)
+
+
+##### Build Filename Match Strings #####
+# The tile index from from the Tile Key shapefiles (e.g., 11TQG335770) won't match the file names (e.g., USGS_LPC_NV_NorthWestElko_2020_D19_11TQG335770.laz) exactly, so we need to create a simple substring pattern based on the tile_code
+
+
+selected_tile_manifest_table[, tile_code_match_string := tile_code]
+
+# Save updated manifest with the match string
+fwrite(
+  selected_tile_manifest_table,
+  file.path(project_root_directory, "04_logs", "selected_tile_manifest.csv")
+)
+
+saveRDS(
+  selected_tile_manifest_table,
+  file.path(project_root_directory, "04_logs", "selected_tile_manifest.rds")
+)
+
+
+##### List Downloaded Zip Files #####
+
+# Find ZIPs in the raw download folder
+downloaded_zip_file_paths <- list.files(
+  path = file.path(project_root_directory, "00_raw_downloads"),
+  pattern = "\\.zip$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+cat("Downloaded ZIP files found:", length(downloaded_zip_file_paths), "\n")
+print(basename(downloaded_zip_file_paths))
+
+##### QA Check Tile Code Match Strings #####
+
+print(selected_tile_manifest_table[1:20, .(
+  flight_name,
+  tile_code,
+  tile_code_match_string
+)])
+
+##### Build Zip Inventory #####
+
+# PURPOSE:
+# Before extracting anything, list the contents of every ZIP archive.
+# That lets you match tile codes to the actual file paths inside the archive.
+
+zip_inventory_list <- lapply(downloaded_zip_file_paths, function(single_zip_path) {
+
+  # List the archive contents without extracting
+  single_zip_contents <- utils::unzip(single_zip_path, list = TRUE)
+
+  # If archive is empty or unreadable, return a minimal record
+  if (is.null(single_zip_contents) || nrow(single_zip_contents) == 0) {
+    return(data.table(
+      zip_file_path = single_zip_path,
+      zip_file_name = basename(single_zip_path),
+      archived_file_name = NA_character_,
+      archived_file_size = NA_real_
+    ))
+  }
+
+  data.table(
+    zip_file_path      = single_zip_path,
+    zip_file_name      = basename(single_zip_path),
+    archived_file_name = single_zip_contents$Name,
+    archived_file_size = single_zip_contents$Length
+  )
+})
+
+zip_inventory_table <- rbindlist(zip_inventory_list, fill = TRUE)
+
+# Keep only LAS/LAZ files listed inside ZIPs
+zip_inventory_lidar_table <- zip_inventory_table[
+  grepl("\\.(las|laz)$", archived_file_name, ignore.case = TRUE)
+]
+
+cat("Archived LAS/LAZ files found inside ZIPs:", nrow(zip_inventory_lidar_table), "\n")
+
+# Save the ZIP inventory so you do not have to rebuild it every time
+fwrite(
+  zip_inventory_lidar_table,
+  file.path(project_root_directory, "04_logs", "zip_inventory_lidar_table.csv")
+)
+
+saveRDS(
+  zip_inventory_lidar_table,
+  file.path(project_root_directory, "04_logs", "zip_inventory_lidar_table.rds")
+)
+
+
+##### Match Selected Tile Codes To Zip Contents #####
+
+# PURPOSE:
+# For each selected tile code, find which archived LAZ file contains that code.
+# This avoids exact filename matching, since naming differs by flight.
+
+matched_tile_rows_list <- lapply(seq_len(nrow(selected_tile_manifest_table)), function(i) {
+
+  single_tile_code   <- selected_tile_manifest_table$tile_code[i]
+  single_flight_name <- selected_tile_manifest_table$flight_name[i]
+  single_study_area  <- selected_tile_manifest_table$study_area_name[i]
+  single_raw_dir     <- selected_tile_manifest_table$study_area_raw_directory[i]
+
+  # Restrict candidate archive entries to those whose archived name contains the tile code
+  candidate_matches <- zip_inventory_lidar_table[
+    grepl(single_tile_code, archived_file_name, fixed = TRUE)
+  ]
+
+  # Add manifest metadata to every candidate row
+  if (nrow(candidate_matches) > 0) {
+    candidate_matches[, tile_code := single_tile_code]
+    candidate_matches[, flight_name := single_flight_name]
+    candidate_matches[, study_area_name := single_study_area]
+    candidate_matches[, target_raw_directory := single_raw_dir]
+  } else {
+    candidate_matches <- data.table(
+      zip_file_path = NA_character_,
+      zip_file_name = NA_character_,
+      archived_file_name = NA_character_,
+      archived_file_size = NA_real_,
+      tile_code = single_tile_code,
+      flight_name = single_flight_name,
+      study_area_name = single_study_area,
+      target_raw_directory = single_raw_dir
+    )
+  }
+
+  candidate_matches
+})
+
+matched_tiles_table <- rbindlist(matched_tile_rows_list, fill = TRUE)
+
+# Count how many archive matches each tile code got
+matched_tiles_table[, n_matches_for_tile_code := .N, by = .(study_area_name, flight_name, tile_code)]
+
+
+##### Summarize Match Quality #####
+
+# One row per selected tile code showing whether it had 0, 1, or multiple ZIP matches
+tile_match_summary_table <- unique(
+  matched_tiles_table[, .(
+    study_area_name,
+    flight_name,
+    tile_code,
+    target_raw_directory,
+    n_matches_for_tile_code
+  )]
+)
+
+cat("\nTile match summary:\n")
+print(tile_match_summary_table[, .N, by = n_matches_for_tile_code][order(n_matches_for_tile_code)])
+
+# Save for review
+fwrite(
+  tile_match_summary_table,
+  file.path(project_root_directory, "04_logs", "tile_match_summary_table.csv")
+)
+
+saveRDS(
+  tile_match_summary_table,
+  file.path(project_root_directory, "04_logs", "tile_match_summary_table.rds")
+)
+
+
+##### Save Clean One-To-One Extraction Table #####
+
+# PURPOSE:
+# Keep only tiles that matched exactly ONE archived file.
+# Those are safe to extract automatically.
+
+tiles_with_exactly_one_match_table <- matched_tiles_table[
+  n_matches_for_tile_code == 1
+]
+
+# Save exact matches
+fwrite(
+  tiles_with_exactly_one_match_table,
+  file.path(project_root_directory, "04_logs", "tiles_with_exactly_one_match_table.csv")
+)
+
+saveRDS(
+  tiles_with_exactly_one_match_table,
+  file.path(project_root_directory, "04_logs", "tiles_with_exactly_one_match_table.rds")
+)
+
+# Save ambiguous matches for manual review
+tiles_with_multiple_matches_table <- matched_tiles_table[
+  n_matches_for_tile_code > 1
+]
+
+fwrite(
+  tiles_with_multiple_matches_table,
+  file.path(project_root_directory, "04_logs", "tiles_with_multiple_matches_table.csv")
+)
+
+# Save missing matches too
+tiles_with_zero_matches_table <- tile_match_summary_table[
+  n_matches_for_tile_code == 0
+]
+
+fwrite(
+  tiles_with_zero_matches_table,
+  file.path(project_root_directory, "04_logs", "tiles_with_zero_matches_table.csv")
+)
+
+
+##### Report Match Status #####
+
+cat("\nTiles with exactly 1 ZIP match :", nrow(unique(tiles_with_exactly_one_match_table[, .(study_area_name, flight_name, tile_code)])), "\n")
+cat("Tiles with multiple ZIP matches:", nrow(tiles_with_multiple_matches_table[, unique(.(study_area_name, flight_name, tile_code))]), "\n")
+cat("Tiles with zero ZIP matches    :", nrow(tiles_with_zero_matches_table), "\n")
+
 ```
+
+
+
+
+
+
+
 
 We will want to verify that the shapefile and LAZ/LAS files are in the same CRS otherwise this whole thing will fail.
 
