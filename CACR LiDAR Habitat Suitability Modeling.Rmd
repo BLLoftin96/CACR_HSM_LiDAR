@@ -539,490 +539,9 @@ for (k in seq_along(pipeline_files)) {
 
 We will then check the chunks in CloudCompare to ensure there isn't any canopy shearing or noise left behind. 
 
+## Fix CRS Discrepancy 
 
-## Ground Classification
-
-Working in mountainous forests, we will need to keep track of the parameters that we use. It is standard to use a cloth simulation filter which is available through the LiDAR function csf(). With the csf function, the LiDAR point cloud is inverted, and a simulation of a “rigid cloth” is draped over the inverted point cloud. The simulated cloth surface is then used to determine which points are associated with the ground.
-
-CSF is controlled by:
-
--   how stiff the 'cloth' is --\> rigidity
-
--   how coarse the 'cloth' mesh is --\> cloth resolution
-
--   much much sagging is allowed --\> slope smoothing
-
-
-Cloth Resolution typical values: 
-
--   0.5 - 0.75 m = very fine cloth (captures small terrain detail)
-
--   1 m = medium cloth (balanced)
-
--   2–3 m = coarse cloth (very smooth terrain)
-
-For our data set we have moderate-to-high density, so we could try 0.5m if 1m isn't working well. The smaller values (0.5m) typically is recommended for dense canopy, complex terrain, and reduces over-smoothing. However, it can eat a lot of RAM and run much slower.
-
-Rigidness typical values:
-
--   1 = flexible cloth (follows small bumps)
--   2 = balanced (good starting point)
--   3 = very stiff (smooth terrain)
-
-Class Threshold typical values: 
-
--   0.3 = stricter ground and may miss true ground under canopy
--   0.5 = good starting point and mid-range
--   0.7 - 1 = risk classifying low vegetation as ground
-
-We will also be trying the PMF (progressive morphological filter) which creates a small window and finds the low points where it then gradually increases the window size and allow higher thresholds as terrain scale increases.Then, we will compare the two. I expect that the CSF may perform better compared to the PMF due to the mountainous terrain.
-
-PMF is controlled by:
-
--   window size(s) (scale of terrain features)
-
--   height threshold (how much deviation from the ground is allowed)
-
-**Here we will begin with starting with the default then check the DTM and tune from there. Since we are classifying these ourselves, we should be on the lookout for DTM pits, sinks, or 'wavy' terrain**
-
-Window Size Typical Values:
-
--   3-5 = small to detect micro-terrain but may misclassify roots/rocks
--   5-10 = balanced (good default)
--   10+ = large for very smooth but can miss real terrain detail
-
-Height Threshold Typical Values: 
-
--   0.5-1.0 = flat terrain
--   1.0-2.0 = forested terrain
--   1.5-3.0 = steep/mountainous 
-
-Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
-
-
-```{r Generate Ground Classification Pipeline - Center Boundary Box 500m}
-
-
-############# Set up Tiles (Do NOT run if you are running the previous chunk above and it is loaded into the environment) #############
-
-# I had to close R so I need to find the filtered 500m centered ROI clips (so I do not need to re-run the filter)
-
-filt_500_dir   <- "Output_Files/Filter_Chunks/"
-
-# Grab only the ROI outputs that end with '_center500_filtered.laz'
-filt_500_files <- list.files(filt_500_dir, pattern = "_center500_filtered\\.laz$", full.names = TRUE)
-
-# Quick sanity check: how many files are there?
-
-length(filt_500_files)
-filt_500_files
-
-dens <- sapply(filt_500_files, function(f) {
-  h <- readLASheader(f)
-
-  # Point count
-  npts <- h@PHB[["Number of point records"]]
-
-  # Bounding box area (m²)
-  area <- (h@PHB[["Max X"]] - h@PHB[["Min X"]]) *
-          (h@PHB[["Max Y"]] - h@PHB[["Min Y"]])
-
-  npts / area
-})
-
-dens
-summary(dens)
-
-# Build a LAScatalog from those ROI clips 
-
-ctg_filt_500 <- readLAScatalog(filt_500_files)
-
-# Get a summary of the catalog
-ctg_filt_500
-
-######### Set up Run Information ##########
-
-# We will set the run to process by file (due to the area being so small) - This means it will need to be altered for the larger pipeline
-
-opt_chunk_size(ctg_filt_500)   <- 0 # set chunk size to 0
-opt_chunk_buffer(ctg_filt_500) <- 0 # 0m buffer for the run
-
-# Keep threads low for RAM stability
-lidR::set_lidr_threads(1)
-
-########### Create Output Folders for Each Method ##############
-
-# Setting up output folders for each ground method allowing us to compare the two
-dir.create(file.path(ctg_filt_500, "ground_csf"), showWarnings = FALSE, recursive = TRUE)
-dir.create(file.path(ctg_filt_500, "ground_pmf"), showWarnings = FALSE, recursive = TRUE)
-
-########## CSF Run ##########
-
-# Define the algorithm settings 
-## Cloth resolution - in m represents the 'grid size' of the cloth (smaller = more detailed, but slower)
-## rigidness - how stiff the cloth is (higher = smouther surface)
-## Class threshold - in m represents how far a point can be above the cloth and still be ground 
-## Slope smooth - a setting that can help on slopes
-
-csf_alg <- csf(
-  sloop_smooth = TRUE, 
-  class_threshold = 0.5, # 0.5m
-  cloth_resolution = 0.5, # 0.75m --> not great changed to  0.5
-  rigidness = 2
-)
-
-# Let lidR know how to name output files for the CSF run since we are not using chunks the {ORIGINALFILENAME} works
-# Write ouptut LAZ files into roi_dir/ground_csf/
-
-opt_output_files(ctg_filt_500) <- file.path(roi_dir, "ground_csf", "{ORIGINALFILENAME}_csf")
-
-# Apply the CSF ground classification to each ROI clip and then return the LAS
-
-catalog_apply(ctg_filt_500, function(cluster) {
-  
-  las <- readLAS(cluster)
-  if(is.empty(las)) return(NULL)
-  
-  # Ground classification: sets classification == 2 for ground points 
-  las <- classify_ground(las, csf_alg)
-  
-  # returning 'las' tells lidR to write it to the opt_output_files() path
-  las
-})
-
-####### PMF Run ######
-
-# Did not work well 
-
-# Define the PMF algorithm 
-
-# pmf_alg <- pmf(
-#  ws = c(3, 5, 7, 9),     # progressive window sizes
-#  th = c(0.5, 1, 1.5, 2)  # progressive thresholds
-#)
-
-
-# Create output names for the PMF
-
-# opt_output_files(ctg_filt_500) <- file.path(roi_dir, "ground_pmf", "{ORIGINALFILENAME}_pmf")
-
-# Apply PMF ground classification algorithm to each ROI clip
-
-#catalog_apply(ctg_filt_500, function(cluster) {
-  
-#  las <- readLAS(cluster)
-#  if (is.empty(las)) return(NULL)
-  
-#  las <- classify_ground(las, pmf_alg)
-  
-#  las
-#})
-
-```
-
-CSF with the current parameters in the algorithm appear to be the best for our data. We can now the classification to make a DEM and a normalized canopy height model. 
-
-## Generate DEM, Slope, and Aspect
-
-Now that our point cloud has had the ground classified. We can create a Digital Elevation Model by interpolating the points which will help us as we make the normalized canopy height model.
-
-** Note when making HSM it will likely be better to aggregate up to 5m or 10m for rasters. **
-
-```{r Generate DEM, Slope, Aspect from Ground Classification - Center Boundary Box 500m}
-
-############ Get the Files Prepped #########
-# Path to your ground-classified files (CSF outputs)
-
-csf_500_dir <- "Output_Files/Filter_Chunks/ground_csf/"
-
-# List all .laz files inside that folder
-# pattern = "\\.laz$" means: only files ending in .laz
-# full.names = TRUE returns full file paths (required for catalog)
-
-csf_500_files <- list.files(
-  csf_500_dir,
-  pattern = "\\.(las|laz)$",
-  full.names = TRUE
-)
-
-stopifnot(length(csf_500_files) > 0)
-
-# Create a LAScatalog object from those files
-# A catalog does NOT load all points into RAM
-# It only stores references to the files on disk
-
-ctg_csf_500 <- readLAScatalog(csf_500_files)
-
-# Print catalog info (extent, density, number of files)
-
-ctg_csf_500
-
-######## Set up lidR ########
-
-# Process by file instead of spatial chunks so chunk_size = 0 means: treat each file as one unit
-
-opt_chunk_size(ctg_csf_500) <- 0
-
-# No buffer needed because
-
-opt_chunk_buffer(ctg_csf_500) <- 0
-
-# Limit threads to 1 to avoid RAM spikes
-
-lidR::set_lidr_threads(1)
-
-######## DEM ##########
-
-# Create an output folder for the DTMs
-
-dtm_dir <- "Output_Files/Filter_Chunks/dtm_csf_500_res1m/"
-dir.create(dtm_dir, showWarnings = FALSE, recursive = TRUE)
-
-# Define a function that lidR will apply to EACH file in the catalog
-
-dtm_fun <- function(cluster, ...) {
-
-  # Read the LAS data for this file (NOT the whole catalog)
-  las <- readLAS(cluster)
-
-  # If the file/chunk has no points, safely skip it
-  # (prevents crashes in catalog_apply)
-  if (is.empty(las)) return(NULL)
-
-  # If no ground points exist, skip (prevents weird rasters)
-  if (!any(las@data$Classification == 2L)) return(NULL)
-  
-  # Create a Digital Terrain Model (DTM)
-  
-    dtm <- rasterize_terrain(
-    las, # Uses ONLY ground-classified points (class = 2)
-    res = 1, # 1 meter grid resolution
-    algorithm = tin() # tin() → Triangulated Irregular Network interpolation
-  )
-
-  # Return the raster so lidR can write it to disk
-  return(dtm)
-}
-
-# Tell lidR how to name file
-
-opt_output_files(ctg_csf_500) <- file.path(
-  dtm_dir,
-  "{ORIGINALFILENAME}_dtm"
-)
-
-# Apply the DTM function to every file in the catalog
-catalog_apply(ctg_csf_500, dtm_fun)
-
-###### Slope and Aspect ######
-
-dtm_files <- list.files(dtm_dir, pattern="\\.(tif|grd)$", full.names=TRUE, ignore.case=TRUE)
-
-slope_dir <- "Output_Files/Filter_Chunks/slope_res1m/"
-asp_dir   <- "Output_Files/Filter_Chunks/aspect_res1m/"
-dir.create(slope_dir, showWarnings = FALSE, recursive = TRUE)
-dir.create(asp_dir,   showWarnings = FALSE, recursive = TRUE)
-
-for (f in dtm_files) {
-  dem <- rast(f)
-
-  slope <- terrain(dem, v = "slope", unit = "degrees")
-  aspect <- terrain(dem, v = "aspect", unit = "degrees")
-
-  base <- tools::file_path_sans_ext(basename(f))
-  writeRaster(slope,  file.path(slope_dir, paste0(base, "_slope.tif")), overwrite = TRUE)
-  writeRaster(aspect, file.path(asp_dir,   paste0(base, "_aspect.tif")), overwrite = TRUE)
-}
-```
-
-## Generate Normalized Canopy Height Model
-
-Now that the ground is classified and we have the dem, we can make the normalized point cloud heights (height above ground). We can then make the canopy height model from these points (canopy top height per pixel)
-
-```{r Generate Normalized Point Cloud and CHM - Center Boundary Box 500m}
-
-########## Normalized Point Cloud ############
-# Set up a directory to save files in 
-
-norm_dir <- "Output_Files/Filter_Chunks/norm_csf/"
-dir.create(norm_dir, showWarnings = FALSE, recursive = TRUE)
-
-# Set up the lidR parameters
-
-opt_chunk_size(ctg_csf_500) <- 0
-opt_chunk_buffer(ctg_csf_500) <- 0
-lidR::set_lidr_threads(1)
-
-# Make a function normalize the point cloud
-
-norm_fun <- function(cluster, ...) {
-  las <- readLAS(cluster)
-  if (is.empty(las)) return(NULL)
-  if (!any(las@data$Classification == 2L)) return(NULL)  # must have ground
-
-  las <- normalize_height(las, tin())
-  las
-}
-
-# Tell lidR where to save and how to name files
-
-opt_output_files(ctg_csf_500) <- file.path(norm_dir, "{ORIGINALFILENAME}_norm")
-
-# Apply the normalization function to the catalog
-
-catalog_apply(ctg_csf_500, norm_fun)
-
-########### Build a Canopy Height Model ###########
-
-# Create a directory to save the files
-
-chm_dir <- "Output_Files/Filter_Chunks/chm_csf_res1m/"
-dir.create(chm_dir, showWarnings = FALSE, recursive = TRUE)
-
-# Create a catalog of the normalized point cloud
-
-ctg_500_norm <- readLAScatalog(list.files(norm_dir, pattern="\\.(las|laz)$", full.names=TRUE, ignore.case=TRUE))
-
-# Set up lidR parameters
-opt_chunk_size(ctg_500_norm) <- 0
-opt_chunk_buffer(ctg_500_norm) <- 0
-lidR::set_lidr_threads(1)
-
-# Create a function for the Canopy Height Model
-
-chm_fun <- function(cluster, ...) {
-  las <- readLAS(cluster)
-  if (is.empty(las)) return(NULL)
-
-  # Canopy height model: typically use max height per cell
-  chm <- rasterize_canopy(
-  las,
-  res = 1,
-  algorithm = pitfree(c(0,2,5,10,15,20,25), subcircle = 0.2)
-)
-
-  chm
-}
-
-opt_output_files(ctg_500_norm) <- file.path(chm_dir, "{ORIGINALFILENAME}_chm")
-catalog_apply(ctg_500_norm, chm_fun)
-```
-
-## Understory Density and Complexity
-
-```{r Generate Understory and Complexity - Center Boundary Box 500m}
-
-###### Understory Metrics ##########
-# Folder containing normalized point clouds
-norm_dir <- "Output_Files/Filter_Chunks/norm_csf/"
-
-# List ALL normalized LAS/LAZ files
-norm_files <- list.files(
-  norm_dir,
-  pattern = "\\.(las|laz)$",  # important: you have .las files, not .laz
-  full.names = TRUE
-)
-
-# Check what was found (very important QA step)
-norm_files
-
-# Create the catalog (this does NOT load points into RAM)
-ctg_500_norm <- readLAScatalog(norm_files)
-
-# Inspect catalog
-ctg_500_norm
-
-# Create Understory Directory
-under_dir <- "Output_Files/Filter_Chunks/understory_res10m/"
-dir.create(under_dir, showWarnings = FALSE, recursive = TRUE)
-
-opt_chunk_size(ctg_500_norm) <- 0
-opt_chunk_buffer(ctg_500_norm) <- 0
-lidR::set_lidr_threads(1)
-
-res <- 10
-cell_area <- res * res
-
-files <- ctg_500_norm@data$filename
-
-for (f in files) {
-  las <- readLAS(f)
-  if (is.empty(las)) {
-    message("SKIP empty file: ", basename(f))
-    next
-  }
-
-  base <- tools::file_path_sans_ext(basename(f))
-  message("Processing: ", base, " | npoints=", npoints(las))
-
-  # total count per cell -> density
-  total_count <- pixel_metrics(las, ~length(Z), res = res)
-  if (ncell(total_count) == 0 || all(is.na(values(total_count)))) {
-    message("  SKIP: total_count empty/NA for ", base)
-    next
-  }
-  total_density <- total_count / cell_area
-
-  # understory points
-  under_pts <- filter_poi(las, Classification != 2L & Z < 2)
-  if (is.empty(under_pts)) {
-    under_density <- total_density; values(under_density) <- 0
-    pct_under <- total_density; values(pct_under) <- 0
-  } else {
-    under_count <- pixel_metrics(under_pts, ~length(Z), res = res)
-
-    # align grids if needed
-    if (!compareGeom(total_count, under_count, stopOnError = FALSE)) {
-      under_count <- resample(under_count, total_count, method = "near")
-    }
-
-    under_density <- under_count / cell_area
-    pct_under <- under_density / total_density
-    pct_under[!is.finite(pct_under)] <- NA
-  }
-
-  writeRaster(total_density,
-              file.path(under_dir, paste0(base, "_dens_total_", res, "m.tif")),
-              overwrite = TRUE)
-  writeRaster(under_density,
-              file.path(under_dir, paste0(base, "_dens_under_0to2m_", res, "m.tif")),
-              overwrite = TRUE)
-  writeRaster(pct_under,
-              file.path(under_dir, paste0(base, "_pct_under_0to2m_", res, "m.tif")),
-              overwrite = TRUE)
-
-  message("  WROTE rasters for: ", base)
-}
-
-
-###### Complexity #######
-
-complex_dir <- "Output_Files/Filter_Chunks/complexity_res1m/"
-dir.create(complex_dir, showWarnings = FALSE, recursive = TRUE)
-
-complex_fun <- function(cluster, ...) {
-  las <- readLAS(cluster)
-  if (is.empty(las)) return(NULL)
-
-  # Use normalized heights; remove ground if you want canopy-only complexity:
-  las_can <- filter_poi(las, Classification != 2L & Z > 0)
-
-  # coefficient of variation of heights in each 1m pixel
-  comp <- pixel_metrics(las_can, ~ sd(Z) / mean(Z), res = 1)
-
-  comp
-}
-
-opt_output_files(ctg_500_norm) <- file.path(complex_dir, "{ORIGINALFILENAME}_complexity")
-catalog_apply(ctg_500_norm, complex_fun)
-
-### If you prefer complexity that includes all points (including ground), remove the filter_poi() line — but for vegetation structure metrics, canopy-only is usually more meaningful.
-```
-
-
-Looking at QGIS I noticed some descrepancies where some tiles appear in random locations well outside the study area.
-
-# Bug Fix
+Found there were multiple CRS, so we will want to account for this and run them under different sections
 
 ```{r Check QGIS Descrepancy}
 ########## PRESERVE ORIGINAL FILE LIST (DO NOT OVERWRITE) ##########
@@ -1153,17 +672,18 @@ dir.create(ground_csf_utm11_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(ground_csf_utm12_dir, showWarnings = FALSE, recursive = TRUE)
 ```
 
-We will need to rerun this. 
+## Create Folders and Directories to Store Metrics and Outputs
 
-```{r Fix Bugs}
+```{r Create Folders and Directories to Store Metrics and Outputs - Pipeline}
 
-#### 1) Inputs were created - verify they exist and make a file path   ####
+#### Inputs were created - verify they exist and make a file path   ####
 
 # Assumes these already exist in your environment from your audit step:
 # - roi_clip_crs_audit_table with columns:
 #     roi_clip_file_path, crs_wkt, utm_zone, geoid_model, roi_clip_base_name
 # - output_root_directory <- "Output_Files/Filter_Chunks/"
 # - ground_csf_utm11_dir, ground_csf_utm12_dir already created
+
 
 stopifnot(exists("roi_clip_crs_audit_table"))
 stopifnot(exists("output_root_directory"))
@@ -1195,52 +715,105 @@ create_metrics_subfolders <- function(metrics_root_dir) {
   vertical_root_dir <- file.path(metrics_root_dir, "vertical_bins_res5m")
 
   subfolder_list <- list(
-    ground_csf        = file.path(metrics_root_dir, "ground_csf"),
-    dtm_res1m         = file.path(metrics_root_dir, "dtm_res1m"),
-    slope_res1m       = file.path(metrics_root_dir, "slope_res1m"),
-    aspect_res1m      = file.path(metrics_root_dir, "aspect_res1m"),
-    norm_csf          = file.path(metrics_root_dir, "norm_csf"),
-    chm_res1m         = file.path(metrics_root_dir, "chm_res1m"),
-    complexity_res1m  = file.path(metrics_root_dir, "complexity_res1m"),
-
-    # NEW: Vertical bins with folders per bin + a summary folder
+    norm_csf         = file.path(metrics_root_dir, "norm_csf"),
+    chm_res1m        = file.path(metrics_root_dir, "chm_res1m"),
+    complexity_res1m = file.path(metrics_root_dir, "complexity_res1m"),
+    rugosity_res5m   = file.path(metrics_root_dir, "rugosity_res5m"),
+    rumple_res5m     = file.path(metrics_root_dir, "rumple_res5m"),
     vertical_bins_5m = list(
-      root       = vertical_root_dir,
-      summary    = file.path(vertical_root_dir, "summary"),
+      root        = vertical_root_dir,
+      summary     = file.path(vertical_root_dir, "summary"),
       bin_0to2m   = file.path(vertical_root_dir, "bin_0to2m"),
       bin_2to5m   = file.path(vertical_root_dir, "bin_2to5m"),
       bin_5to10m  = file.path(vertical_root_dir, "bin_5to10m"),
       bin_10mplus = file.path(vertical_root_dir, "bin_10mplus")
-    ),
-
-    # NEW: Rugosity outputs
-    rugosity_5m = file.path(metrics_root_dir, "rugosity_res5m")
+    )
   )
 
-  # Create simple folders
-  for (nm in names(subfolder_list)) {
-    if (nm == "vertical_bins_5m") next
-    dir.create(subfolder_list[[nm]], showWarnings = FALSE, recursive = TRUE)
+  for (single_name in names(subfolder_list)) {
+    if (single_name == "vertical_bins_5m") next
+    dir.create(subfolder_list[[single_name]], showWarnings = FALSE, recursive = TRUE)
   }
 
-  # Create vertical bin folders
   for (single_dir in subfolder_list$vertical_bins_5m) {
     dir.create(single_dir, showWarnings = FALSE, recursive = TRUE)
   }
 
-  return(subfolder_list)
+  subfolder_list
 }
 
 utm11_dirs <- create_metrics_subfolders(metrics_utm11_root_dir)
 utm12_dirs <- create_metrics_subfolders(metrics_utm12_root_dir)
 
-# Print for QA so you can SEE where stuff will go
 print(utm11_dirs)
 print(utm12_dirs)
 
+```
 
 
-#### 2) Build CRS - Clean ROI Catalogs      ####
+## Ground Classification
+
+Working in mountainous forests, we will need to keep track of the parameters that we use. It is standard to use a cloth simulation filter which is available through the LiDAR function csf(). With the csf function, the LiDAR point cloud is inverted, and a simulation of a “rigid cloth” is draped over the inverted point cloud. The simulated cloth surface is then used to determine which points are associated with the ground.
+
+CSF is controlled by:
+
+-   how stiff the 'cloth' is --\> rigidity
+
+-   how coarse the 'cloth' mesh is --\> cloth resolution
+
+-   much much sagging is allowed --\> slope smoothing
+
+
+Cloth Resolution typical values: 
+
+-   0.5 - 0.75 m = very fine cloth (captures small terrain detail)
+
+-   1 m = medium cloth (balanced)
+
+-   2–3 m = coarse cloth (very smooth terrain)
+
+For our data set we have moderate-to-high density, so we could try 0.5m if 1m isn't working well. The smaller values (0.5m) typically is recommended for dense canopy, complex terrain, and reduces over-smoothing. However, it can eat a lot of RAM and run much slower.
+
+Rigidness typical values:
+
+-   1 = flexible cloth (follows small bumps)
+-   2 = balanced (good starting point)
+-   3 = very stiff (smooth terrain)
+
+Class Threshold typical values: 
+
+-   0.3 = stricter ground and may miss true ground under canopy
+-   0.5 = good starting point and mid-range
+-   0.7 - 1 = risk classifying low vegetation as ground
+
+We will also be trying the PMF (progressive morphological filter) which creates a small window and finds the low points where it then gradually increases the window size and allow higher thresholds as terrain scale increases.Then, we will compare the two. I expect that the CSF may perform better compared to the PMF due to the mountainous terrain.
+
+PMF is controlled by:
+
+-   window size(s) (scale of terrain features)
+
+-   height threshold (how much deviation from the ground is allowed)
+
+**Here we will begin with starting with the default then check the DTM and tune from there. Since we are classifying these ourselves, we should be on the lookout for DTM pits, sinks, or 'wavy' terrain**
+
+Window Size Typical Values:
+
+-   3-5 = small to detect micro-terrain but may misclassify roots/rocks
+-   5-10 = balanced (good default)
+-   10+ = large for very smooth but can miss real terrain detail
+
+Height Threshold Typical Values: 
+
+-   0.5-1.0 = flat terrain
+-   1.0-2.0 = forested terrain
+-   1.5-3.0 = steep/mountainous 
+
+Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
+
+CSF with the current parameters in the algorithm appear to be the best for our data. We can now the classification to make a DEM and a normalized canopy height model. 
+
+```{r Classify - Pipeline}
+#### Build CRS - Clean ROI Catalogs      ####
 
 # These catalogs point to the already-filtered ROI clips on disk.
 # They do NOT create any new files by themselves.
@@ -1261,7 +834,7 @@ lidR::set_lidr_threads(1)
 ctg_roi_filtered_utm11
 ctg_roi_filtered_utm12
 
-#### 3) CSF Ground Classification (BOTH) ####
+#### CSF Ground Classification (BOTH) ####
 
 # This step creates NEW files on disk:
 # - Output_Files/Filter_Chunks/ground_csf_utm11/*_csf.laz
@@ -1274,7 +847,7 @@ csf_algorithm_object <- lidR::csf(
   rigidness = 2
 )
 
-########## CSF RUN: UTM 11 ##########
+# CSF RUN: UTM 11
 
 lidR::opt_output_files(ctg_roi_filtered_utm11) <- file.path(
   utm11_dirs$ground_csf,
@@ -1291,7 +864,7 @@ lidR::catalog_apply(ctg_roi_filtered_utm11, function(cluster) {
   las_object
 })
 
-########## CSF RUN: UTM 12 ##########
+# CSF RUN: UTM 12
 
 lidR::opt_output_files(ctg_roi_filtered_utm12) <- file.path(
   utm12_dirs$ground_csf,
@@ -1392,7 +965,7 @@ csf_output_paths_utm12 <- list.files(utm12_dirs$ground_csf, pattern = "_csf\\.(l
 # Check 
 list.files(utm11_dirs$ground_csf)
 
-#### 4) Build Catalogs from CSF        ####
+#### Build Catalogs from CSF        ####
 
 
 csf_output_paths_utm11 <- list.files(
@@ -1422,8 +995,17 @@ lidR::opt_chunk_size(ctg_csf_utm12) <- 0
 lidR::opt_chunk_buffer(ctg_csf_utm12) <- 0
 
 lidR::set_lidr_threads(1)
+```
 
-#### 5) DTM (1m) for UTM11 and UTM12      ####
+
+## Generate DEM, Slope, and Aspect
+
+Now that our point cloud has had the ground classified. We can create a Digital Elevation Model by interpolating the points which will help us as we make the normalized canopy height model.
+
+** Note when making HSM it will likely be better to aggregate up to 5m or 10m for rasters. **
+
+```{r DEM, Slope, Aspect - Pipeline}
+#### DTM (1m) for UTM11 and UTM12      ####
 # Outputs:
 # - Output_Files/Filter_Chunks/dtm_res1m_utm11/*_dtm.tif
 # - Output_Files/Filter_Chunks/dtm_res1m_utm12/*_dtm.tif
@@ -1445,7 +1027,7 @@ dtm_fun <- function(cluster, ...) {
   return(dtm_raster)
 }
 
-########## DTM: UTM11 ##########
+# DTM: UTM11
 
 lidR::opt_output_files(ctg_csf_utm11) <- file.path(
   utm11_dirs$dtm_res1m,
@@ -1454,7 +1036,7 @@ lidR::opt_output_files(ctg_csf_utm11) <- file.path(
 
 lidR::catalog_apply(ctg_csf_utm11, dtm_fun)
 
-########## DTM: UTM12 ##########
+# DTM: UTM12
 
 lidR::opt_output_files(ctg_csf_utm12) <- file.path(
   utm12_dirs$dtm_res1m,
@@ -1463,7 +1045,7 @@ lidR::opt_output_files(ctg_csf_utm12) <- file.path(
 
 lidR::catalog_apply(ctg_csf_utm12, dtm_fun)
 
-#### 6) Slope + Aspect from DTM (BOTH)    ####
+#### Slope + Aspect from DTM (BOTH)    ####
 
 # Outputs:
 # - slope_res1m_utm11/*_slope.tif
@@ -1488,7 +1070,7 @@ dtm_paths_utm12 <- list.files(
 stopifnot(length(dtm_paths_utm11) > 0)
 stopifnot(length(dtm_paths_utm12) > 0)
 
-########## SLOPE/ASPECT: UTM11 ##########
+# SLOPE/ASPECT: UTM11
 
 for (single_dtm_path in dtm_paths_utm11) {
 
@@ -1512,7 +1094,7 @@ for (single_dtm_path in dtm_paths_utm11) {
   )
 }
 
-########## SLOPE/ASPECT: UTM12 ##########
+# SLOPE/ASPECT: UTM12
 
 for (single_dtm_path in dtm_paths_utm12) {
 
@@ -1536,7 +1118,15 @@ for (single_dtm_path in dtm_paths_utm12) {
   )
 }
 
-#### 7) Normalize Height (BOTH)            ####
+```
+
+
+## Generate Normalized Canopy Height Model
+
+Now that the ground is classified and we have the dem, we can make the normalized point cloud heights (height above ground). We can then make the canopy height model from these points (canopy top height per pixel)
+
+```{r Normalized Heights and Canopy Height Model - Pipeline}
+#### Normalize Height (BOTH)  ####
 
 # Outputs:
 # - norm_csf_utm11/*_norm.laz
@@ -1554,7 +1144,7 @@ norm_fun <- function(cluster, ...) {
   return(normalized_las_object)
 }
 
-########## NORMALIZE: UTM11 ##########
+# NORMALIZE: UTM11
 
 lidR::opt_output_files(ctg_csf_utm11) <- file.path(
   utm11_dirs$norm_csf,
@@ -1563,7 +1153,7 @@ lidR::opt_output_files(ctg_csf_utm11) <- file.path(
 
 lidR::catalog_apply(ctg_csf_utm11, norm_fun)
 
-########## NORMALIZE: UTM12 ##########
+# NORMALIZE: UTM12
 
 lidR::opt_output_files(ctg_csf_utm12) <- file.path(
   utm12_dirs$norm_csf,
@@ -1572,7 +1162,7 @@ lidR::opt_output_files(ctg_csf_utm12) <- file.path(
 
 lidR::catalog_apply(ctg_csf_utm12, norm_fun)
 
-#### 8) Build Normalized Catalog (BOTH)             ####
+# Build Normalized Catalog (BOTH) 
 
 norm_paths_utm11 <- list.files(
   utm11_dirs$norm_csf,
@@ -1602,7 +1192,58 @@ lidR::opt_chunk_buffer(ctg_norm_utm12) <- 0
 
 lidR::set_lidr_threads(1)
 
-#### 9) CHM (1m) (BOTH)                      ####
+# Also keep explicit vectors for the per-file vertical bin loop below
+utm11_norm_files_for_loop <- norm_paths_utm11
+utm12_norm_files_for_loop <- norm_paths_utm12
+
+##### Define Shared Helpers #####
+# Centralize helper functions used by multiple downstream steps
+
+extract_tile_key <- function(single_norm_path) {
+  file_stem <- tools::file_path_sans_ext(basename(single_norm_path))
+
+  # Looks for a tile code like 11TQG335770
+  matched_pattern <- regexpr("\\b\\d{2}[A-Z]{3}\\d{6}\\b", file_stem, perl = TRUE)
+
+  if (matched_pattern[1] != -1) {
+    return(regmatches(file_stem, matched_pattern)[1])
+  }
+
+  # Fallback for long standardized filenames
+  file_stem <- sub("_center500_filtered_.*$", "", file_stem)
+  substr(file_stem, 1, 60)
+}
+
+safe_write <- function(raster_object, filename) {
+  tryCatch(
+    terra::writeRaster(raster_object, filename = filename, overwrite = TRUE),
+    error = function(e) {
+      stop("writeRaster failed for:\n  ", filename, "\nReason: ", conditionMessage(e))
+    }
+  )
+}
+
+replace_bad_values_with_zero <- function(single_raster) {
+  raster_values <- terra::values(single_raster, mat = FALSE)
+  raster_values[is.na(raster_values)] <- 0
+  raster_values[!is.finite(raster_values)] <- 0
+  terra::values(single_raster) <- raster_values
+  single_raster
+}
+
+p95_fun <- function(z) {
+  if (length(z) == 0) return(NA_real_)
+  as.numeric(stats::quantile(z, probs = 0.95, na.rm = TRUE, type = 7))
+}
+
+terra_tmp <- file.path(output_root_directory, "terra_tmp")
+dir.create(terra_tmp, showWarnings = FALSE, recursive = TRUE)
+terra::terraOptions(tempdir = terra_tmp)
+
+stopifnot(dir.exists(terra_tmp))
+stopifnot(file.access(terra_tmp, 2) == 0)
+
+#### CHM (1m) (BOTH)   ####
 
 # Outputs:
 # - chm_res1m_utm11/*_chm.tif
@@ -1622,7 +1263,7 @@ chm_fun <- function(cluster, ...) {
   return(chm_raster)
 }
 
-########## CHM: UTM11 ##########
+# CHM: UTM11
 
 lidR::opt_output_files(ctg_norm_utm11) <- file.path(
   utm11_dirs$chm_res1m,
@@ -1631,7 +1272,7 @@ lidR::opt_output_files(ctg_norm_utm11) <- file.path(
 
 lidR::catalog_apply(ctg_norm_utm11, chm_fun)
 
-########## CHM: UTM12 ##########
+# CHM: UTM12 
 
 lidR::opt_output_files(ctg_norm_utm12) <- file.path(
   utm12_dirs$chm_res1m,
@@ -1640,131 +1281,164 @@ lidR::opt_output_files(ctg_norm_utm12) <- file.path(
 
 lidR::catalog_apply(ctg_norm_utm12, chm_fun)
 
-###### Step 10 ######
-###### Vertical bins (5m) + Canopy cover (first returns only; canopy >= 10m) ######
+#### QA with Focal Smoothing Median ####
 
-# PURPOSE:
-# - Compute vegetation-only vertical structure metrics in 5x5m cells
-# - Write outputs into per-bin folders + a summary folder
+# Most of the study area looked great but there are a few areas where hillshade is really high or terrain is very steep that appear to be being read as part of the canopy height. Lets try this to see if this reduces that noise. This is for a comparison to the original CHM. Typically we would reclassify but given how well everything else looks and my deadline changing this option may be best reserved for a last option.
+
+# - This helps suppress isolated spiky pixels / local artifacts
+# - This does NOT change the raw CHM
+# - This does NOT change cover or any Step 10 bin metrics
 #
-# IMPORTANT LOGIC:
-# - If there is NO vegetation in a pixel: density/percent/cover = 0 (NOT NA)
-# - Height stats (mean/sd/p95) are NA when there are no points in that bin
-# - Percent-in-bin denominator = vegetation points ONLY (not all points)
+# OUTPUTS:
+# - chm_res1m_utm11/*_chm_fmed3.tif
+# - chm_res1m_utm12/*_chm_fmed3.tif
 
-####### Step 10 PREP (run once, OUTSIDE any loop) #######
+compute_chm_focal_median_from_folder <- function(chm_folder) {
 
-# Extracts a tile key like 11TQG380725 or 12TTM790770 from the filename. Found file names got too long for Windows 
-# Falls back to a shortened basename if the pattern isn't found.
-extract_tile_key <- function(single_norm_path) {
-  file_stem <- tools::file_path_sans_ext(basename(single_norm_path))
+  chm_paths <- list.files(
+    chm_folder,
+    pattern = "_chm\\.(tif|grd)$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
 
-  # Pattern: 2 digits + 3 letters + 6 digits (e.g., 11TQG380725)
-  m <- regexpr("\\b\\d{2}[A-Z]{3}\\d{6}\\b", file_stem, perl = TRUE)
+  stopifnot(length(chm_paths) > 0)
 
-  if (m[1] != -1) {
-    return(regmatches(file_stem, m)[1])
+  focal_window_matrix_3x3 <- matrix(1, nrow = 3, ncol = 3)
+
+  for (single_chm_path in chm_paths) {
+
+    chm_rast <- terra::rast(single_chm_path)
+
+    chm_fmed3_rast <- terra::focal(
+      chm_rast,
+      w = focal_window_matrix_3x3,
+      fun = median,
+      na.policy = "omit",
+      fillvalue = NA
+    )
+
+    base_name <- tools::file_path_sans_ext(basename(single_chm_path))
+
+    safe_write(
+      chm_fmed3_rast,
+      file.path(chm_folder, paste0(base_name, "_fmed3.tif"))
+    )
   }
 
-  # Fallback: strip very long standardized suffix if present
-  file_stem <- sub("_center500_filtered_.*$", "", file_stem)
-
-  # If still long, hard truncate as last resort
-  substr(file_stem, 1, 60)
+  invisible(NULL)
 }
+
+# Focal smooth CHM UTM 11
+compute_chm_focal_median_from_folder(utm11_dirs$chm_res1m)
+
+# Focal smooth CHM UTM 12
+compute_chm_focal_median_from_folder(utm12_dirs$chm_res1m)
+```
+
+## Forest Metrics 
+
+```{r Forest Metrics - Pipeline}
+#### Define Vertical Bin Settings ####
+# Height bins: [low, high)
+height_bin_definitions <- list(
+  bin_0to2m   = c(0, 2), # Understory
+  bin_2to5m   = c(2, 5), # Ladder/regeneration
+  bin_5to10m  = c(5, 10), # Midstory
+  bin_10mplus = c(10, Inf) # Overstory
+)
+
+# Define cover as the first-return vegetation above 2m
+cover_height_threshold_m <- 2
+
+# Optional focal smoothing for cover
+# 3x3 moving window on a 5m raster = 15m x 15m local neighborhood
+apply_focal_smoothing <- TRUE
+focal_window_matrix <- matrix(1, nrow = 3, ncol = 3)
+
 
 # Resolution for vertical bin rasters
 vertical_res_m <- 5
 vertical_cell_area_m2 <- vertical_res_m * vertical_res_m
 
-# Height bins: [low, high)
-height_bin_definitions <- list(
-  bin_0to2m   = c(0, 2),
-  bin_2to5m   = c(2, 5),
-  bin_5to10m  = c(5, 10),
-  bin_10mplus = c(10, Inf)
-)
 
-# "True canopy cover" threshold (for canopy ~15–25m typical, >=10m is reasonable)
-canopy_height_threshold_m <- 10
+##### Compute Vertical Bin Metrics and Canopy Cover #####
 
-# Force terra tempdir to a known writable folder (fixes many writeRaster failures)
-terra_tmp <- file.path(output_root_directory, "terra_tmp")
-dir.create(terra_tmp, showWarnings = FALSE, recursive = TRUE)
-terra::terraOptions(tempdir = terra_tmp)
-stopifnot(dir.exists(terra_tmp))
-stopifnot(file.access(terra_tmp, 2) == 0)  # 0 means writable
-
-# Safe p95 helper
-p95_fun <- function(z) {
-  if (length(z) == 0) return(NA_real_)
-  as.numeric(stats::quantile(z, probs = 0.95, na.rm = TRUE, type = 7))
-}
-
-# WriteRaster wrapper that fails with the exact filename (so debugging is painless)
-safe_write <- function(r, filename) {
-  tryCatch(
-    terra::writeRaster(r, filename = filename, overwrite = TRUE),
-    error = function(e) stop("writeRaster failed for:\n  ", filename, "\nReason: ", conditionMessage(e))
-  )
-}
-
-####### Step 10 FUNCTION #######
+# PURPOSE:
+# - Create 5 m rasters for each height stratum
+# - For all bins: percent, density, presence/absence
+# - For 2-5, 5-10, and 10+ bins: meanZ, sdZ, p95Z
+# - For 0-2 m: NO meanZ, sdZ, p95Z
+# - Also create the cover raster used later for gap fraction
 
 compute_and_write_vertical_bins <- function(single_norm_path, vertical_bins_dir_list) {
 
-  ###### 10.1 Load normalized LAS ######
+  ##### Load One Normalized Tile #####
+
   las_object <- lidR::readLAS(single_norm_path)
   if (lidR::is.empty(las_object)) return(invisible(NULL))
 
- # Use tile key for output prefixes (short + meaningful)
   tile_key <- extract_tile_key(single_norm_path)
-  message("Step 10 (veg-only bins): ", tile_key)
+  message("Processing forest metrics for tile: ", tile_key)
 
-  # Optional but helpful: absolute, normalized output dirs (removes //)
   summary_dir <- normalizePath(vertical_bins_dir_list$summary, winslash = "\\", mustWork = TRUE)
 
-  ###### 10.2 Template grid (geometry only) ######
-  # Using all points ONLY to create the raster grid (extent/resolution)
+  ##### Build Template Raster Grid #####
+
+  # This creates the 5 m grid geometry using all points in the tile
   template_count <- lidR::pixel_metrics(las_object, ~length(Z), res = vertical_res_m)
+
   if (terra::ncell(template_count) == 0) {
-    message("  SKIP: template grid empty for ", tile_key)
+    message("  SKIP: empty template grid for ", tile_key)
     return(invisible(NULL))
   }
 
-  ###### 10.3 Define vegetation-only points (your metrics are ONLY based on veg) ######
+  ##### Define Vegetation Points #####
+
+  # Vegetation here means non-ground points above 0 m normalized height
   veg_all_pts <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
 
-  ###### 10.4 Vegetation count raster (denominator) ######
-  # If there is no vegetation anywhere: veg_count is 0 everywhere (NOT NA)
+  ##### Compute Total Vegetation Count #####
+
   if (lidR::is.empty(veg_all_pts)) {
+
     veg_count_rast <- template_count
     terra::values(veg_count_rast) <- 0
+
   } else {
+
     veg_count_rast <- lidR::pixel_metrics(veg_all_pts, ~length(Z), res = vertical_res_m)
 
-    # Rare mismatch insurance
     if (!terra::compareGeom(template_count, veg_count_rast, stopOnError = FALSE)) {
       veg_count_rast <- terra::resample(veg_count_rast, template_count, method = "near")
     }
+
+    veg_count_rast <- replace_bad_values_with_zero(veg_count_rast)
   }
 
   safe_write(
     veg_count_rast,
-    file.path(vertical_bins_dir_list$summary, paste0(tile_key, "_vegcount_5m.tif"))
+    file.path(summary_dir, paste0(tile_key, "_vegcount_5m.tif"))
   )
 
-  ###### 10.5 Total vegetation density (points per m²) ######
+  ##### Compute Total Vegetation Density #####
+
   veg_density_rast <- veg_count_rast / vertical_cell_area_m2
+  veg_density_rast <- replace_bad_values_with_zero(veg_density_rast)
 
   safe_write(
     veg_density_rast,
-    file.path(vertical_bins_dir_list$summary, paste0(tile_key, "_dens_veg_total_5m.tif"))
+    file.path(summary_dir, paste0(tile_key, "_dens_veg_total_5m.tif"))
   )
 
-  ###### 10.6 Canopy cover (FIRST RETURNS ONLY; veg-only; >= threshold) ######
-  # cover = (# first-return veg points with Z >= threshold) / (# first-return veg points)
-  # if denom=0 => cover=0
+  ##### Compute Canopy Cover #####
+
+  # LOGIC:
+  # - first returns only
+  # - vegetation only
+  # - cover is proportion of those returns above 2 m
+  #
+  # This is broader vegetation cover, not only canopy >= 10 m
 
   las_cover <- las_object
 
@@ -1775,35 +1449,60 @@ compute_and_write_vertical_bins <- function(single_norm_path, vertical_bins_dir_
   las_cover <- lidR::filter_poi(las_cover, Classification != 2L & Z > 0)
 
   if (lidR::is.empty(las_cover)) {
-    canopy_cover_rast <- template_count
-    terra::values(canopy_cover_rast) <- 0
+
+    cover_rast <- template_count
+    terra::values(cover_rast) <- 0
+
   } else {
-    canopy_cover_rast <- lidR::pixel_metrics(
+
+    cover_rast <- lidR::pixel_metrics(
       las_cover,
-      ~ ifelse(length(Z) == 0, 0, sum(Z >= canopy_height_threshold_m) / length(Z)),
+      ~ ifelse(length(Z) == 0, 0, sum(Z > cover_height_threshold_m) / length(Z)),
       res = vertical_res_m
     )
 
-    if (!terra::compareGeom(template_count, canopy_cover_rast, stopOnError = FALSE)) {
-      canopy_cover_rast <- terra::resample(canopy_cover_rast, template_count, method = "near")
+    if (!terra::compareGeom(template_count, cover_rast, stopOnError = FALSE)) {
+      cover_rast <- terra::resample(cover_rast, template_count, method = "near")
     }
+
+    cover_rast <- replace_bad_values_with_zero(cover_rast)
   }
 
   safe_write(
-    canopy_cover_rast,
-    file.path(
-      vertical_bins_dir_list$summary,
-      paste0(tile_key, "_canopycover_firstreturn_veg_ge", canopy_height_threshold_m, "m_5m.tif")
-    )
+    cover_rast,
+    file.path(summary_dir, paste0(tile_key, "_cover_5m.tif"))
   )
 
-  ###### 10.7 Per-bin rasters ######
+  if (isTRUE(apply_focal_smoothing)) {
+
+    cover_smooth_rast <- terra::focal(
+      cover_rast,
+      w = cover_focal_window_matrix,
+      fun = mean,
+      na.policy = "omit",
+      fillvalue = NA
+    )
+
+    cover_smooth_rast <- terra::clamp(
+      cover_smooth_rast,
+      lower = 0,
+      upper = 1,
+      values = TRUE
+    )
+
+    safe_write(
+      cover_smooth_rast,
+      file.path(summary_dir, paste0(tile_key, "_cover_f3_5m.tif"))
+    )
+  }
+
+  ##### Compute Metrics Within Each Vertical Bin #####
+
   for (bin_name in names(height_bin_definitions)) {
 
     zlo <- height_bin_definitions[[bin_name]][1]
     zhi <- height_bin_definitions[[bin_name]][2]
 
-    # Bin points: veg-only + stratum filter
     bin_pts <- lidR::filter_poi(veg_all_pts, Z >= zlo & Z < zhi)
 
     out_dir <- switch(
@@ -1814,98 +1513,123 @@ compute_and_write_vertical_bins <- function(single_norm_path, vertical_bins_dir_
       bin_10mplus = vertical_bins_dir_list$bin_10mplus
     )
 
-    # Initialize rasters from template
-    bin_count_rast <- template_count
-    bin_mean_rast  <- template_count
-    bin_sd_rast    <- template_count
-    bin_p95_rast   <- template_count
+    ##### Initialize Output Rasters #####
 
-    # Defaults: no points => density/percent=0, stats=NA
-    terra::values(bin_count_rast) <- 0
-    terra::values(bin_mean_rast)  <- NA_real_
-    terra::values(bin_sd_rast)    <- NA_real_
-    terra::values(bin_p95_rast)   <- NA_real_
+    bin_count_rast   <- template_count
+    bin_mean_rast    <- template_count
+    bin_sd_rast      <- template_count
+    bin_p95_rast     <- template_count
+    bin_present_rast <- template_count
+
+    terra::values(bin_count_rast)   <- 0
+    terra::values(bin_mean_rast)    <- NA_real_
+    terra::values(bin_sd_rast)      <- NA_real_
+    terra::values(bin_p95_rast)     <- NA_real_
+    terra::values(bin_present_rast) <- 0
+
+    ##### Fill Raster Values If Points Exist #####
 
     if (!lidR::is.empty(bin_pts)) {
 
-      # Counts
+      # Count of vegetation returns in this height bin
       bin_count_tmp <- lidR::pixel_metrics(bin_pts, ~length(Z), res = vertical_res_m)
+
       if (!terra::compareGeom(template_count, bin_count_tmp, stopOnError = FALSE)) {
         bin_count_tmp <- terra::resample(bin_count_tmp, template_count, method = "near")
       }
+
       terra::values(bin_count_rast) <- terra::values(bin_count_tmp)
 
-      # Stats
-      bin_mean_tmp <- lidR::pixel_metrics(bin_pts, ~mean(Z),   res = vertical_res_m)
-      bin_sd_tmp   <- lidR::pixel_metrics(bin_pts, ~sd(Z),     res = vertical_res_m)
-      bin_p95_tmp  <- lidR::pixel_metrics(bin_pts, ~p95_fun(Z),res = vertical_res_m)
+      # Presence / absence for this bin
+      bin_present_rast <- bin_count_rast
+      present_values <- terra::values(bin_present_rast, mat = FALSE)
+      present_values[is.na(present_values)] <- 0
+      present_values[present_values > 0] <- 1
+      terra::values(bin_present_rast) <- present_values
 
-      if (!terra::compareGeom(template_count, bin_mean_tmp, stopOnError = FALSE)) {
-        bin_mean_tmp <- terra::resample(bin_mean_tmp, template_count, method = "near")
-      }
-      if (!terra::compareGeom(template_count, bin_sd_tmp, stopOnError = FALSE)) {
-        bin_sd_tmp <- terra::resample(bin_sd_tmp, template_count, method = "near")
-      }
-      if (!terra::compareGeom(template_count, bin_p95_tmp, stopOnError = FALSE)) {
-        bin_p95_tmp <- terra::resample(bin_p95_tmp, template_count, method = "near")
-      }
+      # Height summary metrics are only written for the upper three bins
+      if (bin_name != "bin_0to2m") {
 
-      terra::values(bin_mean_rast) <- terra::values(bin_mean_tmp)
-      terra::values(bin_sd_rast)   <- terra::values(bin_sd_tmp)
-      terra::values(bin_p95_rast)  <- terra::values(bin_p95_tmp)
+        bin_mean_tmp <- lidR::pixel_metrics(bin_pts, ~mean(Z),    res = vertical_res_m)
+        bin_sd_tmp   <- lidR::pixel_metrics(bin_pts, ~sd(Z),      res = vertical_res_m)
+        bin_p95_tmp  <- lidR::pixel_metrics(bin_pts, ~p95_fun(Z), res = vertical_res_m)
+
+        if (!terra::compareGeom(template_count, bin_mean_tmp, stopOnError = FALSE)) {
+          bin_mean_tmp <- terra::resample(bin_mean_tmp, template_count, method = "near")
+        }
+
+        if (!terra::compareGeom(template_count, bin_sd_tmp, stopOnError = FALSE)) {
+          bin_sd_tmp <- terra::resample(bin_sd_tmp, template_count, method = "near")
+        }
+
+        if (!terra::compareGeom(template_count, bin_p95_tmp, stopOnError = FALSE)) {
+          bin_p95_tmp <- terra::resample(bin_p95_tmp, template_count, method = "near")
+        }
+
+        terra::values(bin_mean_rast) <- terra::values(bin_mean_tmp)
+        terra::values(bin_sd_rast)   <- terra::values(bin_sd_tmp)
+        terra::values(bin_p95_rast)  <- terra::values(bin_p95_tmp)
+      }
     }
 
-    # Density
+    ##### Convert Empty Cells to Zero Where Appropriate #####
+
+    bin_count_rast <- replace_bad_values_with_zero(bin_count_rast)
+
+    ##### Density #####
+
+    # Density = vegetation returns in this bin per square meter
     bin_density_rast <- bin_count_rast / vertical_cell_area_m2
+    bin_density_rast <- replace_bad_values_with_zero(bin_density_rast)
 
-    # Percent of veg in this bin (veg-only denominator)
+    ##### Percent #####
+
+    # Percent = proportion of all vegetation returns in the cell that belong to this bin
     bin_pct_rast <- bin_count_rast / veg_count_rast
-    bin_pct_rast[!is.finite(bin_pct_rast)] <- 0  # denom=0 => 0
+    bin_pct_rast <- replace_bad_values_with_zero(bin_pct_rast)
 
-    # Write
+    ##### Write Outputs #####
+
     safe_write(bin_density_rast, file.path(out_dir, paste0(tile_key, "_dens_5m.tif")))
     safe_write(bin_pct_rast,     file.path(out_dir, paste0(tile_key, "_pct_5m.tif")))
-    safe_write(bin_mean_rast,    file.path(out_dir, paste0(tile_key, "_meanZ_5m.tif")))
-    safe_write(bin_sd_rast,      file.path(out_dir, paste0(tile_key, "_sdZ_5m.tif")))
-    safe_write(bin_p95_rast,     file.path(out_dir, paste0(tile_key, "_p95Z_5m.tif")))
+    safe_write(bin_present_rast, file.path(out_dir, paste0(tile_key, "_present_5m.tif")))
+
+    if (bin_name != "bin_0to2m") {
+      safe_write(bin_mean_rast, file.path(out_dir, paste0(tile_key, "_meanZ_5m.tif")))
+      safe_write(bin_sd_rast,   file.path(out_dir, paste0(tile_key, "_sdZ_5m.tif")))
+      safe_write(bin_p95_rast,  file.path(out_dir, paste0(tile_key, "_p95Z_5m.tif")))
+    }
   }
 
   invisible(NULL)
 }
 
-####### Step 10 RUNS #######
+##### Run Vertical Bin Metrics and Canopy Cover #####
 
-###### Step 10a ######
-###### RUN VERTICAL BINS: UTM11 ######
 for (single_norm_path in utm11_norm_files_for_loop) {
   compute_and_write_vertical_bins(single_norm_path, utm11_dirs$vertical_bins_5m)
 }
 
-###### Step 10b ######
-###### RUN VERTICAL BINS: UTM12 ######
 for (single_norm_path in utm12_norm_files_for_loop) {
   compute_and_write_vertical_bins(single_norm_path, utm12_dirs$vertical_bins_5m)
 }
 
-###### Step 10c ######
-###### QA: Do bin % rasters sum to ~1 per pixel? ######
+##### QA Check That Bin Percents Sum to Approximately 1 #####
 
 qa_check_bin_pct_sum <- function(vertical_bins_dir_list,
                                  summary_dir = vertical_bins_dir_list$summary,
                                  tol = 0.02) {
-  # tol = allowable absolute deviation from 1.0 (e.g., 0.02 = 2%)
-
-  # For each tile, your rasters live in per-bin folders.
-  # We find matching *_pct_5m.tif files for each bin and group by base_name.
 
   pct0_files <- list.files(vertical_bins_dir_list$bin_0to2m,   pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
   pct2_files <- list.files(vertical_bins_dir_list$bin_2to5m,   pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
   pct5_files <- list.files(vertical_bins_dir_list$bin_5to10m,  pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
-  pct10_files<- list.files(vertical_bins_dir_list$bin_10mplus, pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
+  pct10_files <- list.files(vertical_bins_dir_list$bin_10mplus, pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
 
-  stopifnot(length(pct0_files) > 0, length(pct2_files) > 0, length(pct5_files) > 0, length(pct10_files) > 0)
+  stopifnot(length(pct0_files) > 0)
+  stopifnot(length(pct2_files) > 0)
+  stopifnot(length(pct5_files) > 0)
+  stopifnot(length(pct10_files) > 0)
 
-  # Helper to get base id = everything before "_pct_5m.tif"
   get_id <- function(x) sub("_pct_5m\\.tif$", "", basename(x), ignore.case = TRUE)
 
   ids0  <- vapply(pct0_files,  get_id, character(1))
@@ -1914,42 +1638,30 @@ qa_check_bin_pct_sum <- function(vertical_bins_dir_list,
   ids10 <- vapply(pct10_files, get_id, character(1))
 
   common_ids <- Reduce(intersect, list(ids0, ids2, ids5, ids10))
-  if (length(common_ids) == 0) stop("No matching *_pct_5m.tif sets found across the 4 bins.")
 
-  message("QA: found ", length(common_ids), " tiles with all 4 bin pct rasters.")
+  if (length(common_ids) == 0) {
+    stop("No matching *_pct_5m.tif files found across the four bins.")
+  }
 
-  # Loop tile-by-tile
-  for (id in common_ids) {
+  for (single_id in common_ids) {
 
-    f0  <- pct0_files[ids0  == id][1]
-    f2  <- pct2_files[ids2  == id][1]
-    f5  <- pct5_files[ids5  == id][1]
-    f10 <- pct10_files[ids10 == id][1]
+    r0  <- terra::rast(pct0_files[ids0 == single_id][1])
+    r2  <- terra::rast(pct2_files[ids2 == single_id][1])
+    r5  <- terra::rast(pct5_files[ids5 == single_id][1])
+    r10 <- terra::rast(pct10_files[ids10 == single_id][1])
 
-    r0  <- terra::rast(f0)
-    r2  <- terra::rast(f2)
-    r5  <- terra::rast(f5)
-    r10 <- terra::rast(f10)
-
-    # Sum of bin percentages
     r_sum <- r0 + r2 + r5 + r10
     r_err <- abs(r_sum - 1)
 
-    # If you wrote a veg density raster in summary, use it to split "veg present" vs "no veg"
-    # (You may have _dens_total_5m.tif; ideally you'd have _dens_veg_total_5m.tif, but we can use total density as a proxy.)
-    
-vegcount_path <- file.path(summary_dir, paste0(id, "_vegcount_5m.tif"))
-vegcount_r <- if (file.exists(vegcount_path)) terra::rast(vegcount_path) else NULL
+    vegcount_path <- file.path(summary_dir, paste0(single_id, "_vegcount_5m.tif"))
+    vegcount_rast <- if (file.exists(vegcount_path)) terra::rast(vegcount_path) else NULL
 
-if (!is.null(vegcount_r)) {
-  # Pixels with vegetation returns (correct mask for your veg-only bins)
-  mask_has_pts <- vegcount_r > 0
-} else {
-  # Fallback: if vegcount wasn't written, just use non-NA sum pixels
-  mask_has_pts <- !is.na(r_sum)
-}
+    if (!is.null(vegcount_rast)) {
+      mask_has_pts <- vegcount_rast > 0
+    } else {
+      mask_has_pts <- !is.na(r_sum)
+    }
 
-    # Stats: where there are points, does it sum close to 1?
     vals_sum <- terra::values(r_sum, mat = FALSE)
     vals_err <- terra::values(r_err, mat = FALSE)
     vals_mask <- terra::values(mask_has_pts, mat = FALSE)
@@ -1957,43 +1669,79 @@ if (!is.null(vegcount_r)) {
     ok_idx <- which(!is.na(vals_sum) & !is.na(vals_mask) & vals_mask)
 
     if (length(ok_idx) == 0) {
-      message("QA SKIP: no valid pixels for ", id)
+      message("QA SKIP: no valid vegetation pixels for ", single_id)
       next
     }
 
     mean_sum <- mean(vals_sum[ok_idx], na.rm = TRUE)
-    max_err  <- max(vals_err[ok_idx],  na.rm = TRUE)
+    max_err  <- max(vals_err[ok_idx], na.rm = TRUE)
     pct_bad  <- mean(vals_err[ok_idx] > tol, na.rm = TRUE) * 100
 
-    message("QA ", id, " | mean(sum)=", round(mean_sum, 4),
-            " | max|sum-1|=", round(max_err, 4),
-            " | %pixels>|tol|=", round(pct_bad, 2), "%")
-
-    # Write rasters for visual QA in QGIS
-    terra::writeRaster(r_sum,
-      filename = file.path(summary_dir, paste0(id, "_QA_binsum_pct_5m.tif")),
-      overwrite = TRUE
+    message(
+      "QA ", single_id,
+      " | mean(sum)=", round(mean_sum, 4),
+      " | max|sum-1|=", round(max_err, 4),
+      " | %pixels>|tol|=", round(pct_bad, 2), "%"
     )
 
-    terra::writeRaster(r_err,
-      filename = file.path(summary_dir, paste0(id, "_QA_binsum_absErr_5m.tif")),
-      overwrite = TRUE
+    safe_write(
+      r_sum,
+      file.path(summary_dir, paste0(single_id, "_QA_binsum_pct_5m.tif"))
+    )
+
+    safe_write(
+      r_err,
+      file.path(summary_dir, paste0(single_id, "_QA_binsum_absErr_5m.tif"))
     )
   }
 
   invisible(NULL)
 }
 
-###### Step 10c1 ######
-###### RUN QA: UTM11 ######
 qa_check_bin_pct_sum(utm11_dirs$vertical_bins_5m)
-
-###### Step 10c2 ######
-###### RUN QA: UTM12 ######
 qa_check_bin_pct_sum(utm12_dirs$vertical_bins_5m)
 
-###### Step 11 ######
-###### Rugosity from CHM (SD aggregated to 5m) ######
+##### Compute Gap Fraction From Cover #####
+
+# PURPOSE:
+# - Derive openness / gap fraction directly from the saved cover raster
+# - gap fraction = 1 - cover
+
+compute_gap_fraction_from_cover_folder <- function(summary_folder) {
+
+  cover_paths <- list.files(
+    summary_folder,
+    pattern = "_cover(_f3)?_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  stopifnot(length(cover_paths) > 0)
+
+  for (single_cover_path in cover_paths) {
+
+    cover_rast <- terra::rast(single_cover_path)
+    gap_rast <- 1 - cover_rast
+
+    base_name <- tools::file_path_sans_ext(basename(single_cover_path))
+
+    safe_write(
+      gap_rast,
+      file.path(summary_folder, paste0(base_name, "_gapfrac.tif"))
+    )
+  }
+
+  invisible(NULL)
+}
+
+compute_gap_fraction_from_cover_folder(utm11_dirs$vertical_bins_5m$summary)
+compute_gap_fraction_from_cover_folder(utm12_dirs$vertical_bins_5m$summary)
+
+##### Compute Rugosity From CHM #####
+
+# PURPOSE:
+# - Rugosity here is local variability in canopy height
+# - Implemented as SD of 1 m CHM values aggregated to 5 m cells
 
 compute_rugosity_from_chm_folder <- function(chm_folder, rugosity_folder) {
 
@@ -2010,42 +1758,160 @@ compute_rugosity_from_chm_folder <- function(chm_folder, rugosity_folder) {
 
     chm_1m <- terra::rast(single_chm_path)
 
-    # SD of 1m CHM aggregated to 5m
-    rugosity_sd_5m <- terra::aggregate(chm_1m, fact = 5, fun = sd, na.rm = TRUE)
+    rugosity_sd_5m <- terra::aggregate(
+      chm_1m,
+      fact = 5,
+      fun = sd,
+      na.rm = TRUE
+    )
 
     base_name <- tools::file_path_sans_ext(basename(single_chm_path))
 
-    terra::writeRaster(
+    safe_write(
       rugosity_sd_5m,
-      filename = file.path(rugosity_folder, paste0(base_name, "_rugosity_sd_5m.tif")),
-      overwrite = TRUE
+      file.path(rugosity_folder, paste0(base_name, "_rugosity_sd_5m.tif"))
     )
   }
 
   invisible(NULL)
 }
 
-compute_rugosity_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rugosity_5m)
-compute_rugosity_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rugosity_5m)
+compute_rugosity_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rugosity_res5m)
+compute_rugosity_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rugosity_res5m)
 
-###### Step 12 ######
-###### Complexity (1m) (BOTH) ######
+##### Compute Rumple From CHM #####
+
+# PURPOSE:
+# - Rumple index is canopy surface area divided by ground-planar area
+# - Here it is approximated in moving 5x5 windows on the 1 m CHM
+#
+# INTERPRETATION:
+# - Values near 1 = flatter canopy surface
+# - Higher values = more vertically uneven / corrugated canopy surface
+
+compute_rumple_from_chm <- function(chm_raster) {
+
+  chm_matrix <- terra::as.matrix(chm_raster, wide = TRUE)
+
+  nr <- nrow(chm_matrix)
+  nc <- ncol(chm_matrix)
+
+  rumple_matrix <- matrix(NA_real_, nrow = nr, ncol = nc)
+
+  # 5x5 neighborhood on a 1 m CHM = 25 m2 planar area
+  for (row_index in 3:(nr - 2)) {
+    for (col_index in 3:(nc - 2)) {
+
+      local_window <- chm_matrix[(row_index - 2):(row_index + 2),
+                                 (col_index - 2):(col_index + 2)]
+
+      if (all(is.na(local_window))) next
+
+      # Fill NAs locally so the surface calculation does not break
+      local_window_filled <- local_window
+      local_window_filled[is.na(local_window_filled)] <- mean(local_window_filled, na.rm = TRUE)
+
+      # Skip if still unusable
+      if (all(!is.finite(local_window_filled))) next
+
+      # Approximate canopy surface area using triangular facets
+      surface_area <- 0
+
+      for (r in 1:4) {
+        for (c in 1:4) {
+
+          z11 <- local_window_filled[r, c]
+          z12 <- local_window_filled[r, c + 1]
+          z21 <- local_window_filled[r + 1, c]
+          z22 <- local_window_filled[r + 1, c + 1]
+
+          # Triangle 1: (r,c), (r,c+1), (r+1,c)
+          tri1_u <- c(1, 0, z12 - z11)
+          tri1_v <- c(0, 1, z21 - z11)
+          tri1_cross <- pracma::cross(tri1_u, tri1_v)
+          tri1_area <- 0.5 * sqrt(sum(tri1_cross^2))
+
+          # Triangle 2: (r+1,c+1), (r,c+1), (r+1,c)
+          tri2_u <- c(-1, 0, z12 - z22)
+          tri2_v <- c(0, -1, z21 - z22)
+          tri2_cross <- pracma::cross(tri2_u, tri2_v)
+          tri2_area <- 0.5 * sqrt(sum(tri2_cross^2))
+
+          surface_area <- surface_area + tri1_area + tri2_area
+        }
+      }
+
+      planar_area <- 16
+      rumple_matrix[row_index, col_index] <- surface_area / planar_area
+    }
+  }
+
+  rumple_rast <- terra::rast(chm_raster)
+  terra::values(rumple_rast) <- as.vector(rumple_matrix)
+
+  rumple_rast
+}
+
+compute_rumple_from_chm_folder <- function(chm_folder, rumple_folder) {
+
+  chm_paths <- list.files(
+    chm_folder,
+    pattern = "_chm\\.(tif|grd)$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  stopifnot(length(chm_paths) > 0)
+
+  for (single_chm_path in chm_paths) {
+
+    chm_rast <- terra::rast(single_chm_path)
+    rumple_rast <- compute_rumple_from_chm(chm_rast)
+
+    base_name <- tools::file_path_sans_ext(basename(single_chm_path))
+
+    safe_write(
+      rumple_rast,
+      file.path(rumple_folder, paste0(base_name, "_rumple_5m.tif"))
+    )
+  }
+
+  invisible(NULL)
+}
+
+compute_rumple_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rumple_res5m)
+compute_rumple_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rumple_res5m)
+
+##### Compute Point-Cloud Complexity #####
+
+# PURPOSE:
+# - Complexity is computed directly from the normalized vegetation point cloud
+# - Here I am using coefficient of variation of vegetation heights:
+#     sd(Z) / mean(Z)
+#
+# NOTE:
+# - This gives a simple 1 m point-cloud-based vertical complexity surface
+# - If mean(Z) is very small, values can become unstable, so we guard against that
 
 complex_fun <- function(cluster, ...) {
 
   las_object <- lidR::readLAS(cluster)
   if (lidR::is.empty(las_object)) return(NULL)
 
-  las_canopy_only <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
+  las_veg_only <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
 
-  complexity_raster <- lidR::pixel_metrics(las_canopy_only, ~ sd(Z) / mean(Z), res = 1)
+  if (lidR::is.empty(las_veg_only)) return(NULL)
 
-  return(complexity_raster)
+  complexity_raster <- lidR::pixel_metrics(
+    las_veg_only,
+    ~ ifelse(length(Z) < 2 || mean(Z) <= 0, NA_real_, stats::sd(Z) / mean(Z)),
+    res = 1
+  )
+
+  complexity_raster
 }
 
-###### Step 12a ######
-###### COMPLEXITY: UTM11 ######
-
+# UTM11 complexity
 lidR::opt_output_files(ctg_norm_utm11) <- file.path(
   utm11_dirs$complexity_res1m,
   "{ORIGINALFILENAME}_complexity"
@@ -2053,9 +1919,7 @@ lidR::opt_output_files(ctg_norm_utm11) <- file.path(
 
 lidR::catalog_apply(ctg_norm_utm11, complex_fun)
 
-###### Step 12b ######
-###### COMPLEXITY: UTM12 ######
-
+# UTM12 complexity
 lidR::opt_output_files(ctg_norm_utm12) <- file.path(
   utm12_dirs$complexity_res1m,
   "{ORIGINALFILENAME}_complexity"
@@ -2063,15 +1927,17 @@ lidR::opt_output_files(ctg_norm_utm12) <- file.path(
 
 lidR::catalog_apply(ctg_norm_utm12, complex_fun)
 
-###### Step 13 ######
-###### FINAL QA: PRINT WHERE OUTPUTS WERE SAVED ######
+##### Print Final Output Locations #####
 
 cat("\nDONE.\n")
 cat("All UTM11 outputs saved under: ", metrics_utm11_root_dir, "\n")
 cat("All UTM12 outputs saved under: ", metrics_utm12_root_dir, "\n")
 
-cat("\nUTM11 subfolders:\n"); print(utm11_dirs)
-cat("\nUTM12 subfolders:\n"); print(utm12_dirs)
+cat("\nUTM11 subfolders:\n")
+print(utm11_dirs)
+
+cat("\nUTM12 subfolders:\n")
+print(utm12_dirs)
 ```
 
 
