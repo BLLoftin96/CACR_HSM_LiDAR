@@ -2196,7 +2196,8 @@ if (length(missing_tile_index_paths) > 0) {
 
 # Define Raw Tile Output Folder 
 
-# These are the folders where you will place ONLY the selected raw tiles
+# These are the folders where you will place ONLY the selected raw tiles. We are going to place them in a hard drive called G drive
+
 southhills_raw_tile_directory <- file.path(
   project_root_directory, "01_raw_tiles_selected", "SouthHills_raw"
 )
@@ -2492,23 +2493,17 @@ selected_tile_manifest_table[, processing_group := paste0(study_area_name, "_Run
 print(selected_tile_manifest_table[, .N, by = processing_group][order(processing_group)])
 
 
-##### Define Processing-Group Raw Tile Folders #####
+##### Define Processing-Group Raw Tile Folders On G Drive #####
+# Save the selected raw tiles to the external G: drive instead of C:.
 
-southhills_utm11_raw_tile_directory <- file.path(
-  project_root_directory, "01_raw_tiles_selected", "SouthHills_raw_UTM11"
-)
+southhills_utm11_raw_tile_directory <- "G:/01_raw_tiles_selected/SouthHills_raw_UTM11"
+southhills_utm12_raw_tile_directory <- "G:/01_raw_tiles_selected/SouthHills_raw_UTM12"
+albion_utm12_raw_tile_directory     <- "G:/01_raw_tiles_selected/Albion_raw_UTM12"
 
-southhills_utm12_raw_tile_directory <- file.path(
-  project_root_directory, "01_raw_tiles_selected", "SouthHills_raw_UTM12"
-)
-
-albion_utm12_raw_tile_directory <- file.path(
-  project_root_directory, "01_raw_tiles_selected", "Albion_raw_UTM12"
-)
-
+# Create the folders if they do not already exist
 dir.create(southhills_utm11_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
 dir.create(southhills_utm12_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
-dir.create(albion_utm12_raw_tile_directory, recursive = TRUE, showWarnings = FALSE)
+dir.create(albion_utm12_raw_tile_directory,     recursive = TRUE, showWarnings = FALSE)
 
 
 ##### Assign Raw Tile Directory By Processing Group #####
@@ -2657,7 +2652,7 @@ saveRDS(
 
 # Find ZIPs in the raw download folder
 downloaded_zip_file_paths <- list.files(
-  path = file.path(project_root_directory, "00_raw_downloads"),
+  path = file.path("G:/00_raw_downloads"),
   pattern = "\\.zip$",
   full.names = TRUE,
   ignore.case = TRUE
@@ -2675,17 +2670,15 @@ print(selected_tile_manifest_table[1:20, .(
 )])
 
 ##### Build Zip Inventory #####
-
-# PURPOSE:
-# Before extracting anything, list the contents of every ZIP archive.
-# That lets you match tile codes to the actual file paths inside the archive.
+# Read the contents of each Zip file without extracting it
+# Creates a table of archived file name that we can match against tile code
 
 zip_inventory_list <- lapply(downloaded_zip_file_paths, function(single_zip_path) {
 
   # List the archive contents without extracting
   single_zip_contents <- utils::unzip(single_zip_path, list = TRUE)
 
-  # If archive is empty or unreadable, return a minimal record
+  # If archive is empty or unreadable, return a minimal placeholder record
   if (is.null(single_zip_contents) || nrow(single_zip_contents) == 0) {
     return(data.table(
       zip_file_path = single_zip_path,
@@ -2695,6 +2688,7 @@ zip_inventory_list <- lapply(downloaded_zip_file_paths, function(single_zip_path
     ))
   }
 
+  # Otherwise build one row per archived file
   data.table(
     zip_file_path      = single_zip_path,
     zip_file_name      = basename(single_zip_path),
@@ -2725,30 +2719,36 @@ saveRDS(
 
 
 ##### Match Selected Tile Codes To Zip Contents #####
-
-# PURPOSE:
-# For each selected tile code, find which archived LAZ file contains that code.
-# This avoids exact filename matching, since naming differs by flight.
+# For each selected tile in the locked manifest, find archived LAZ/LAS file names that contain that tile code.
 
 matched_tile_rows_list <- lapply(seq_len(nrow(selected_tile_manifest_table)), function(i) {
 
-  single_tile_code   <- selected_tile_manifest_table$tile_code[i]
-  single_flight_name <- selected_tile_manifest_table$flight_name[i]
-  single_study_area  <- selected_tile_manifest_table$study_area_name[i]
-  single_raw_dir     <- selected_tile_manifest_table$study_area_raw_directory[i]
+  single_tile_code        <- selected_tile_manifest_table$tile_code[i]
+  single_flight_name      <- selected_tile_manifest_table$flight_name[i]
+  single_study_area       <- selected_tile_manifest_table$study_area_name[i]
+  single_processing_group <- selected_tile_manifest_table$processing_group[i]
+  single_raw_dir          <- selected_tile_manifest_table$study_area_raw_directory[i]
 
-  # Restrict candidate archive entries to those whose archived name contains the tile code
+  # Find archive entries whose file name contains this tile code
   candidate_matches <- zip_inventory_lidar_table[
     grepl(single_tile_code, archived_file_name, fixed = TRUE)
   ]
 
-  # Add manifest metadata to every candidate row
+  # Add manifest metadata to the matching rows
   if (nrow(candidate_matches) > 0) {
+
+    # Copy so we do not accidentally modify the source table by reference
+    candidate_matches <- copy(candidate_matches)
+
     candidate_matches[, tile_code := single_tile_code]
     candidate_matches[, flight_name := single_flight_name]
     candidate_matches[, study_area_name := single_study_area]
+    candidate_matches[, processing_group := single_processing_group]
     candidate_matches[, target_raw_directory := single_raw_dir]
+
   } else {
+
+    # If there were no matches, return one placeholder row so the tile is still tracked
     candidate_matches <- data.table(
       zip_file_path = NA_character_,
       zip_file_name = NA_character_,
@@ -2757,6 +2757,7 @@ matched_tile_rows_list <- lapply(seq_len(nrow(selected_tile_manifest_table)), fu
       tile_code = single_tile_code,
       flight_name = single_flight_name,
       study_area_name = single_study_area,
+      processing_group = single_processing_group,
       target_raw_directory = single_raw_dir
     )
   }
@@ -2767,16 +2768,29 @@ matched_tile_rows_list <- lapply(seq_len(nrow(selected_tile_manifest_table)), fu
 matched_tiles_table <- rbindlist(matched_tile_rows_list, fill = TRUE)
 
 # Count how many archive matches each tile code got
-matched_tiles_table[, n_matches_for_tile_code := .N, by = .(study_area_name, flight_name, tile_code)]
+matched_tiles_table[
+  ,
+  n_matches_for_tile_code := .N,
+  by = .(study_area_name, flight_name, tile_code)
+]
 
+# For this we can see there are duplicates within flights with the code noting that some matches happen up to 3 times. Looking at the selected_tile_manifest confirms this. We need to consider a couple things:
+# 1. Matches between Elko and SouthernID_2018_12 we want to keep Elko tiles as this one was more recent and would capture images post 2020 Badger Fire. 
+# 2. Matches may not fully overlap, so removing them without inspecting this could lead to gaps or strange edges in our data and we want to take care of this now. 
+
+# This is something that we can handle in our raster production.
 
 ##### Summarize Match Quality #####
+# Create one summary row per selected tile code showing whether it had:
+# - 0 archive matches
+# - 1 archive match
+# - multiple archive matches
 
-# One row per selected tile code showing whether it had 0, 1, or multiple ZIP matches
 tile_match_summary_table <- unique(
   matched_tiles_table[, .(
     study_area_name,
     flight_name,
+    processing_group,
     tile_code,
     target_raw_directory,
     n_matches_for_tile_code
@@ -2784,9 +2798,15 @@ tile_match_summary_table <- unique(
 )
 
 cat("\nTile match summary:\n")
-print(tile_match_summary_table[, .N, by = n_matches_for_tile_code][order(n_matches_for_tile_code)])
+print(
+  tile_match_summary_table[, .N, by = n_matches_for_tile_code][
+    order(n_matches_for_tile_code)
+  ]
+)
 
-# Save for review
+tile_match_summary_table[, .N, by = n_matches_for_tile_code][order(n_matches_for_tile_code)]
+
+# Save match summary
 fwrite(
   tile_match_summary_table,
   file.path(project_root_directory, "04_logs", "tile_match_summary_table.csv")
@@ -2799,16 +2819,13 @@ saveRDS(
 
 
 ##### Save Clean One-To-One Extraction Table #####
-
-# PURPOSE:
 # Keep only tiles that matched exactly ONE archived file.
-# Those are safe to extract automatically.
+# Those are the safest rows to extract automatically.
 
 tiles_with_exactly_one_match_table <- matched_tiles_table[
   n_matches_for_tile_code == 1
 ]
 
-# Save exact matches
 fwrite(
   tiles_with_exactly_one_match_table,
   file.path(project_root_directory, "04_logs", "tiles_with_exactly_one_match_table.csv")
@@ -2819,7 +2836,13 @@ saveRDS(
   file.path(project_root_directory, "04_logs", "tiles_with_exactly_one_match_table.rds")
 )
 
-# Save ambiguous matches for manual review
+
+##### Save Ambiguous And Missing Match Tables #####
+
+# PURPOSE:
+# Save tiles with multiple archive matches for review
+# and save tiles with zero matches for troubleshooting.
+
 tiles_with_multiple_matches_table <- matched_tiles_table[
   n_matches_for_tile_code > 1
 ]
@@ -2829,7 +2852,6 @@ fwrite(
   file.path(project_root_directory, "04_logs", "tiles_with_multiple_matches_table.csv")
 )
 
-# Save missing matches too
 tiles_with_zero_matches_table <- tile_match_summary_table[
   n_matches_for_tile_code == 0
 ]
@@ -2842,10 +2864,72 @@ fwrite(
 
 ##### Report Match Status #####
 
-cat("\nTiles with exactly 1 ZIP match :", nrow(unique(tiles_with_exactly_one_match_table[, .(study_area_name, flight_name, tile_code)])), "\n")
-cat("Tiles with multiple ZIP matches:", nrow(tiles_with_multiple_matches_table[, unique(.(study_area_name, flight_name, tile_code))]), "\n")
-cat("Tiles with zero ZIP matches    :", nrow(tiles_with_zero_matches_table), "\n")
+# PURPOSE:
+# Give a compact summary of how many selected tiles had:
+# - exactly one archive match
+# - multiple archive matches
+# - zero archive matches
 
+cat(
+  "\nTiles with exactly 1 ZIP match :",
+  nrow(unique(tiles_with_exactly_one_match_table[, .(
+    study_area_name,
+    flight_name,
+    tile_code
+  )])),
+  "\n"
+)
+
+cat(
+  "Tiles with multiple ZIP matches:",
+  nrow(unique(tiles_with_multiple_matches_table[, .(
+    study_area_name,
+    flight_name,
+    tile_code
+  )])),
+  "\n"
+)
+
+cat(
+  "Tiles with zero ZIP matches    :",
+  nrow(tiles_with_zero_matches_table),
+  "\n"
+)
+
+##### QA Check: Expected Tile Counts Match #####
+
+# PURPOSE:
+# Ensure the number of tiles with exactly one match equals the expected total (937).
+# This prevents proceeding with incomplete or duplicated data.
+
+# Expected total tiles (from your QGIS + manifest validation)
+expected_total_tiles <- 937
+
+# Count unique tiles with exactly one match
+observed_exact_match_tiles <- unique(
+  tiles_with_exactly_one_match_table[, .(
+    study_area_name,
+    flight_name,
+    tile_code
+  )]
+)
+
+observed_total_tiles <- nrow(observed_exact_match_tiles)
+
+cat("\nExpected total tiles:", expected_total_tiles, "\n")
+cat("Observed tiles with exactly one match:", observed_total_tiles, "\n")
+
+# Hard stop if mismatch
+if (observed_total_tiles != expected_total_tiles) {
+  stop(
+    "Tile count mismatch!\n",
+    "Expected: ", expected_total_tiles, "\n",
+    "Observed: ", observed_total_tiles, "\n",
+    "Check tiles_with_zero_matches_table and tiles_with_multiple_matches_table before proceeding."
+  )
+}
+
+cat("Tile count check PASSED. All tiles accounted for.\n")
 ```
 
 
