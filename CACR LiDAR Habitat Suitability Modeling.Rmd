@@ -722,8 +722,8 @@ create_metrics_subfolders <- function(metrics_root_dir) {
     complexity_res1m = file.path(metrics_root_dir, "complexity_res1m"),
     rugosity_res5m   = file.path(metrics_root_dir, "rugosity_res5m"),
     rumple_res5m     = file.path(metrics_root_dir, "rumple_res5m"),
-    FHD_res5m        = file.path(metrics_root_dir, "fhd_res5m"),
-    gap_fraction_5m  = file.path(metrics_root_dir, "gap_fraction_res5m"),
+    fhd_res5m        = file.path(metrics_root_dir, "fhd_res5m"),
+    gap_fraction_res5m  = file.path(metrics_root_dir, "gap_fraction_res5m"),
     vertical_bins_5m = list(
       root        = vertical_root_dir,
       summary     = file.path(vertical_root_dir, "summary"),
@@ -2040,8 +2040,8 @@ compute_rugosity_from_chm_folder <- function(chm_folder_path, rugosity_folder_pa
   invisible(NULL)
 }
 
-compute_rugosity_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rugosity_5m)
-compute_rugosity_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rugosity_5m)
+compute_rugosity_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rugosity_res5m)
+compute_rugosity_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rugosity_res5m)
 
 
 ##### Compute Rumple From CHM #####
@@ -2102,8 +2102,8 @@ compute_rumple_from_chm_folder <- function(chm_folder_path, rumple_folder_path) 
   invisible(NULL)
 }
 
-compute_rumple_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rumple_5m)
-compute_rumple_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rumple_5m)
+compute_rumple_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rumple_res5m)
+compute_rumple_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rumple_res5m)
 
 
 ##### Compute Complexity From Point Cloud At 5m #####
@@ -2127,25 +2127,25 @@ compute_point_cloud_complexity_raster <- function(cluster, ...) {
     return(NULL)
   }
 
-  complexity_raster_5m <- lidR::pixel_metrics(
+  complexity_raster_1m <- lidR::pixel_metrics(
     vegetation_points_las,
     ~safe_complexity_function(Z),
-    res = 5
+    res = 1
   )
 
-  complexity_raster_5m
+  complexity_raster_1m
 }
 
 lidR::opt_output_files(ctg_norm_utm11) <- file.path(
-  utm11_dirs$complexity_res5m,
-  "{ORIGINALFILENAME}_complexity_5m"
+  utm11_dirs$complexity_res1m,
+  "{ORIGINALFILENAME}_complexity_1m"
 )
 
 lidR::catalog_apply(ctg_norm_utm11, compute_point_cloud_complexity_raster)
 
 lidR::opt_output_files(ctg_norm_utm12) <- file.path(
-  utm12_dirs$complexity_res5m,
-  "{ORIGINALFILENAME}_complexity_5m"
+  utm12_dirs$complexity_res1m,
+  "{ORIGINALFILENAME}_complexity_1m"
 )
 
 lidR::catalog_apply(ctg_norm_utm12, compute_point_cloud_complexity_raster)
