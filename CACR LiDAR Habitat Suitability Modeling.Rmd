@@ -534,9 +534,12 @@ for (k in seq_along(pipeline_files)) {
 
 ```
 
-We will then check the chunks in CloudCompare to ensure there isn't any canopy shearing or noise left behind.
 
-## Ground Classification
+We will then check the chunks in CloudCompare to ensure there isn't any canopy shearing or noise left behind. 
+
+## Fix CRS Discrepancy
+
+Found there were multiple CRS, so we will want to account for this and run them under different sections
 
 Working in mountainous forests, we will need to keep track of the parameters that we use. It is standard to use a cloth simulation filter which is available through the LiDAR function csf(). With the csf function, the LiDAR point cloud is inverted, and a simulation of a “rigid cloth” is draped over the inverted point cloud. The simulated cloth surface is then used to determine which points are associated with the ground.
 
@@ -716,447 +719,18 @@ catalog_apply(ctg_filt_500, function(cluster) {
 
 CSF with the current parameters in the algorithm appear to be the best for our data. We can now the classification to make a DEM and a normalized canopy height model.
 
-## Generate DEM, Slope, and Aspect
+## Create Folders and Directories to Store Metrics
 
-Now that our point cloud has had the ground classified. We can create a Digital Elevation Model by interpolating the points which will help us as we make the normalized canopy height model.
+```{r Create Folders and Directories to Store Metrics and Outputs - Pipeline}
 
-\*\* Note when making HSM it will likely be better to aggregate up to 5m or 10m for rasters. \*\*
-
-```{r Generate DEM, Slope, Aspect from Ground Classification - Center Boundary Box 500m}
-
-############ Get the Files Prepped #########
-# Path to your ground-classified files (CSF outputs)
-
-csf_500_dir <- "Output_Files/Filter_Chunks/ground_csf/"
-
-# List all .laz files inside that folder
-# pattern = "\\.laz$" means: only files ending in .laz
-# full.names = TRUE returns full file paths (required for catalog)
-
-csf_500_files <- list.files(
-  csf_500_dir,
-  pattern = "\\.(las|laz)$",
-  full.names = TRUE
-)
-
-stopifnot(length(csf_500_files) > 0)
-
-# Create a LAScatalog object from those files
-# A catalog does NOT load all points into RAM
-# It only stores references to the files on disk
-
-ctg_csf_500 <- readLAScatalog(csf_500_files)
-
-# Print catalog info (extent, density, number of files)
-
-ctg_csf_500
-
-######## Set up lidR ########
-
-# Process by file instead of spatial chunks so chunk_size = 0 means: treat each file as one unit
-
-opt_chunk_size(ctg_csf_500) <- 0
-
-# No buffer needed because
-
-opt_chunk_buffer(ctg_csf_500) <- 0
-
-# Limit threads to 1 to avoid RAM spikes
-
-lidR::set_lidr_threads(1)
-
-######## DEM ##########
-
-# Create an output folder for the DTMs
-
-dtm_dir <- "Output_Files/Filter_Chunks/dtm_csf_500_res1m/"
-dir.create(dtm_dir, showWarnings = FALSE, recursive = TRUE)
-
-# Define a function that lidR will apply to EACH file in the catalog
-
-dtm_fun <- function(cluster, ...) {
-
-  # Read the LAS data for this file (NOT the whole catalog)
-  las <- readLAS(cluster)
-
-  # If the file/chunk has no points, safely skip it
-  # (prevents crashes in catalog_apply)
-  if (is.empty(las)) return(NULL)
-
-  # If no ground points exist, skip (prevents weird rasters)
-  if (!any(las@data$Classification == 2L)) return(NULL)
-  
-  # Create a Digital Terrain Model (DTM)
-  
-    dtm <- rasterize_terrain(
-    las, # Uses ONLY ground-classified points (class = 2)
-    res = 1, # 1 meter grid resolution
-    algorithm = tin() # tin() → Triangulated Irregular Network interpolation
-  )
-
-  # Return the raster so lidR can write it to disk
-  return(dtm)
-}
-
-# Tell lidR how to name file
-
-opt_output_files(ctg_csf_500) <- file.path(
-  dtm_dir,
-  "{ORIGINALFILENAME}_dtm"
-)
-
-# Apply the DTM function to every file in the catalog
-catalog_apply(ctg_csf_500, dtm_fun)
-
-###### Slope and Aspect ######
-
-dtm_files <- list.files(dtm_dir, pattern="\\.(tif|grd)$", full.names=TRUE, ignore.case=TRUE)
-
-slope_dir <- "Output_Files/Filter_Chunks/slope_res1m/"
-asp_dir   <- "Output_Files/Filter_Chunks/aspect_res1m/"
-dir.create(slope_dir, showWarnings = FALSE, recursive = TRUE)
-dir.create(asp_dir,   showWarnings = FALSE, recursive = TRUE)
-
-for (f in dtm_files) {
-  dem <- rast(f)
-
-  slope <- terrain(dem, v = "slope", unit = "degrees")
-  aspect <- terrain(dem, v = "aspect", unit = "degrees")
-
-  base <- tools::file_path_sans_ext(basename(f))
-  writeRaster(slope,  file.path(slope_dir, paste0(base, "_slope.tif")), overwrite = TRUE)
-  writeRaster(aspect, file.path(asp_dir,   paste0(base, "_aspect.tif")), overwrite = TRUE)
-}
-```
-
-## Generate Normalized Canopy Height Model
-
-Now that the ground is classified and we have the dem, we can make the normalized point cloud heights (height above ground). We can then make the canopy height model from these points (canopy top height per pixel)
-
-```{r Generate Normalized Point Cloud and CHM - Center Boundary Box 500m}
-
-########## Normalized Point Cloud ############
-# Set up a directory to save files in 
-
-norm_dir <- "Output_Files/Filter_Chunks/norm_csf/"
-dir.create(norm_dir, showWarnings = FALSE, recursive = TRUE)
-
-# Set up the lidR parameters
-
-opt_chunk_size(ctg_csf_500) <- 0
-opt_chunk_buffer(ctg_csf_500) <- 0
-lidR::set_lidr_threads(1)
-
-# Make a function normalize the point cloud
-
-norm_fun <- function(cluster, ...) {
-  las <- readLAS(cluster)
-  if (is.empty(las)) return(NULL)
-  if (!any(las@data$Classification == 2L)) return(NULL)  # must have ground
-
-  las <- normalize_height(las, tin())
-  las
-}
-
-# Tell lidR where to save and how to name files
-
-opt_output_files(ctg_csf_500) <- file.path(norm_dir, "{ORIGINALFILENAME}_norm")
-
-# Apply the normalization function to the catalog
-
-catalog_apply(ctg_csf_500, norm_fun)
-
-########### Build a Canopy Height Model ###########
-
-# Create a directory to save the files
-
-chm_dir <- "Output_Files/Filter_Chunks/chm_csf_res1m/"
-dir.create(chm_dir, showWarnings = FALSE, recursive = TRUE)
-
-# Create a catalog of the normalized point cloud
-
-ctg_500_norm <- readLAScatalog(list.files(norm_dir, pattern="\\.(las|laz)$", full.names=TRUE, ignore.case=TRUE))
-
-# Set up lidR parameters
-opt_chunk_size(ctg_500_norm) <- 0
-opt_chunk_buffer(ctg_500_norm) <- 0
-lidR::set_lidr_threads(1)
-
-# Create a function for the Canopy Height Model
-
-chm_fun <- function(cluster, ...) {
-  las <- readLAS(cluster)
-  if (is.empty(las)) return(NULL)
-
-  # Canopy height model: typically use max height per cell
-  chm <- rasterize_canopy(
-  las,
-  res = 1,
-  algorithm = pitfree(c(0,2,5,10,15,20,25), subcircle = 0.2)
-)
-
-  chm
-}
-
-opt_output_files(ctg_500_norm) <- file.path(chm_dir, "{ORIGINALFILENAME}_chm")
-catalog_apply(ctg_500_norm, chm_fun)
-```
-
-## Understory Density and Complexity
-
-```{r Generate Understory and Complexity - Center Boundary Box 500m}
-
-###### Understory Metrics ##########
-# Folder containing normalized point clouds
-norm_dir <- "Output_Files/Filter_Chunks/norm_csf/"
-
-# List ALL normalized LAS/LAZ files
-norm_files <- list.files(
-  norm_dir,
-  pattern = "\\.(las|laz)$",  # important: you have .las files, not .laz
-  full.names = TRUE
-)
-
-# Check what was found (very important QA step)
-norm_files
-
-# Create the catalog (this does NOT load points into RAM)
-ctg_500_norm <- readLAScatalog(norm_files)
-
-# Inspect catalog
-ctg_500_norm
-
-# Create Understory Directory
-under_dir <- "Output_Files/Filter_Chunks/understory_res10m/"
-dir.create(under_dir, showWarnings = FALSE, recursive = TRUE)
-
-opt_chunk_size(ctg_500_norm) <- 0
-opt_chunk_buffer(ctg_500_norm) <- 0
-lidR::set_lidr_threads(1)
-
-res <- 10
-cell_area <- res * res
-
-files <- ctg_500_norm@data$filename
-
-for (f in files) {
-  las <- readLAS(f)
-  if (is.empty(las)) {
-    message("SKIP empty file: ", basename(f))
-    next
-  }
-
-  base <- tools::file_path_sans_ext(basename(f))
-  message("Processing: ", base, " | npoints=", npoints(las))
-
-  # total count per cell -> density
-  total_count <- pixel_metrics(las, ~length(Z), res = res)
-  if (ncell(total_count) == 0 || all(is.na(values(total_count)))) {
-    message("  SKIP: total_count empty/NA for ", base)
-    next
-  }
-  total_density <- total_count / cell_area
-
-  # understory points
-  under_pts <- filter_poi(las, Classification != 2L & Z < 2)
-  if (is.empty(under_pts)) {
-    under_density <- total_density; values(under_density) <- 0
-    pct_under <- total_density; values(pct_under) <- 0
-  } else {
-    under_count <- pixel_metrics(under_pts, ~length(Z), res = res)
-
-    # align grids if needed
-    if (!compareGeom(total_count, under_count, stopOnError = FALSE)) {
-      under_count <- resample(under_count, total_count, method = "near")
-    }
-
-    under_density <- under_count / cell_area
-    pct_under <- under_density / total_density
-    pct_under[!is.finite(pct_under)] <- NA
-  }
-
-  writeRaster(total_density,
-              file.path(under_dir, paste0(base, "_dens_total_", res, "m.tif")),
-              overwrite = TRUE)
-  writeRaster(under_density,
-              file.path(under_dir, paste0(base, "_dens_under_0to2m_", res, "m.tif")),
-              overwrite = TRUE)
-  writeRaster(pct_under,
-              file.path(under_dir, paste0(base, "_pct_under_0to2m_", res, "m.tif")),
-              overwrite = TRUE)
-
-  message("  WROTE rasters for: ", base)
-}
-
-
-###### Complexity #######
-
-complex_dir <- "Output_Files/Filter_Chunks/complexity_res1m/"
-dir.create(complex_dir, showWarnings = FALSE, recursive = TRUE)
-
-complex_fun <- function(cluster, ...) {
-  las <- readLAS(cluster)
-  if (is.empty(las)) return(NULL)
-
-  # Use normalized heights; remove ground if you want canopy-only complexity:
-  las_can <- filter_poi(las, Classification != 2L & Z > 0)
-
-  # coefficient of variation of heights in each 1m pixel
-  comp <- pixel_metrics(las_can, ~ sd(Z) / mean(Z), res = 1)
-
-  comp
-}
-
-opt_output_files(ctg_500_norm) <- file.path(complex_dir, "{ORIGINALFILENAME}_complexity")
-catalog_apply(ctg_500_norm, complex_fun)
-
-### If you prefer complexity that includes all points (including ground), remove the filter_poi() line — but for vegetation structure metrics, canopy-only is usually more meaningful.
-```
-
-Looking at QGIS I noticed some descrepancies where some tiles appear in random locations well outside the study area.
-
-# Pipeline Fix
-
-```{r Check QGIS Descrepancy}
-########## PRESERVE ORIGINAL FILE LIST (DO NOT OVERWRITE) ##########
-
-roi_filtered_directory_path <- "Output_Files/Filter_Chunks/"
-
-# Identify ONLY the 500m ROI clips created earlier in the pipeline
-roi_filtered_clip_file_paths <- list.files(
-  path = roi_filtered_directory_path,
-  pattern = "_center500_filtered\\.laz$",  # strict match to your naming scheme
-  full.names = TRUE
-)
-
-# Sanity check: ensure files were found
-stopifnot(length(roi_filtered_clip_file_paths) > 0)
-
-########## FUNCTION: EXTRACT CRS WKT FROM LAS HEADER (MEMORY SAFE) ##########
-# This reads ONLY metadata, not the full point cloud
-
-extract_crs_wkt_from_las_header <- function(single_laz_file_path) {
-  
-  # Read LAS header only (very low RAM usage)
-  las_header_object <- lidR::readLASheader(single_laz_file_path)
-  
-  # Extract CRS as WKT (most reliable identifier across flights)
-  crs_wkt_value <- sf::st_crs(las_header_object)$wkt
-  
-  # Return NA if CRS is missing
-  if (is.null(crs_wkt_value) || is.na(crs_wkt_value)) {
-    return(NA_character_)
-  }
-  
-  return(crs_wkt_value)
-}
-
-########## BUILD DETAILED CRS AUDIT TABLE ##########
-
-roi_clip_crs_audit_table <- data.table(
-  roi_clip_file_path = roi_filtered_clip_file_paths
-)
-
-# Extract CRS WKT for each ROI clip (no point cloud loading)
-roi_clip_crs_audit_table[
-  , crs_wkt := vapply(
-    roi_clip_file_path,
-    extract_crs_wkt_from_las_header,
-    character(1)
-  )
-]
-
-########## SUMMARIZE DISTINCT CRS GROUPS ##########
-# This will reveal if LAZ + SouthernIdaho2018_14_LAZ are in a different CRS
-
-roi_clip_crs_summary_table <- roi_clip_crs_audit_table[
-  , .(number_of_files = .N),
-  by = crs_wkt
-][order(-number_of_files)]
-
-# Print clear diagnostic output
-roi_clip_crs_summary_table
-
-########## INPUT: ROI CLIPS CREATED BY YOUR FILTER STEP ##########
-
-roi_filtered_directory_path <- "Output_Files/Filter_Chunks/"
-
-roi_filtered_clip_file_paths <- list.files(
-  path = roi_filtered_directory_path,
-  pattern = "_center500_filtered\\.laz$",
-  full.names = TRUE
-)
-
-stopifnot(length(roi_filtered_clip_file_paths) > 0)
-
-########## FUNCTION: EXTRACT HEADER CRS WKT (MEMORY SAFE) ##########
-
-extract_crs_wkt_from_las_header <- function(single_laz_file_path) {
-  las_header_object <- lidR::readLASheader(single_laz_file_path)
-  crs_wkt_value <- sf::st_crs(las_header_object)$wkt
-  if (is.null(crs_wkt_value) || is.na(crs_wkt_value)) return(NA_character_)
-  crs_wkt_value
-}
-
-########## BUILD AUDIT TABLE ##########
-
-roi_clip_crs_audit_table <- data.table(
-  roi_clip_file_path = roi_filtered_clip_file_paths
-)
-
-roi_clip_crs_audit_table[
-  , crs_wkt := vapply(
-    roi_clip_file_path,
-    extract_crs_wkt_from_las_header,
-    character(1)
-  )
-]
-
-# Parse UTM zone from the WKT text (works for your three CRS strings)
-roi_clip_crs_audit_table[
-  , utm_zone := fifelse(
-    str_detect(crs_wkt, "UTM zone 11N"), "11N",
-    fifelse(str_detect(crs_wkt, "UTM zone 12N"), "12N", NA_character_)
-  )
-]
-
-# Parse geoid model from WKT (Geoid12B vs Geoid18)
-roi_clip_crs_audit_table[
-  , geoid_model := fifelse(
-    str_detect(crs_wkt, "GEOID12B"), "GEOID12B",
-    fifelse(str_detect(crs_wkt, "GEOID18"), "GEOID18", NA_character_)
-  )
-]
-
-# Helpful filename column for reading output
-roi_clip_crs_audit_table[
-  , roi_clip_base_name := tools::file_path_sans_ext(basename(roi_clip_file_path))
-]
-
-roi_clip_crs_audit_table[, .(roi_clip_base_name, utm_zone, geoid_model)]
-
-########## DEFINE SEPARATE OUTPUT ROOTS (VERY IMPORTANT) ##########
-
-output_root_directory <- "Output_Files/Filter_Chunks/"
-
-ground_csf_utm11_dir <- file.path(output_root_directory, "ground_csf_utm11")
-ground_csf_utm12_dir <- file.path(output_root_directory, "ground_csf_utm12")
-
-dir.create(ground_csf_utm11_dir, showWarnings = FALSE, recursive = TRUE)
-dir.create(ground_csf_utm12_dir, showWarnings = FALSE, recursive = TRUE)
-```
-
-We will need to rerun this.
-
-```{r Fix Bugs}
-
-#### 1) Inputs were created - verify they exist and make a file path   ####
+#### Inputs were created - verify they exist and make a file path   ####
 
 # Assumes these already exist in your environment from your audit step:
 # - roi_clip_crs_audit_table with columns:
 #     roi_clip_file_path, crs_wkt, utm_zone, geoid_model, roi_clip_base_name
 # - output_root_directory <- "Output_Files/Filter_Chunks/"
 # - ground_csf_utm11_dir, ground_csf_utm12_dir already created
+
 
 stopifnot(exists("roi_clip_crs_audit_table"))
 stopifnot(exists("output_root_directory"))
@@ -1188,489 +762,124 @@ create_metrics_subfolders <- function(metrics_root_dir) {
   vertical_root_dir <- file.path(metrics_root_dir, "vertical_bins_res5m")
 
   subfolder_list <- list(
-    ground_csf        = file.path(metrics_root_dir, "ground_csf"),
-    dtm_res1m         = file.path(metrics_root_dir, "dtm_res1m"),
-    slope_res1m       = file.path(metrics_root_dir, "slope_res1m"),
-    aspect_res1m      = file.path(metrics_root_dir, "aspect_res1m"),
-    norm_csf          = file.path(metrics_root_dir, "norm_csf"),
-    chm_res1m         = file.path(metrics_root_dir, "chm_res1m"),
-    complexity_res1m  = file.path(metrics_root_dir, "complexity_res1m"),
-
-    # NEW: Vertical bins with folders per bin + a summary folder
+    norm_csf         = file.path(metrics_root_dir, "norm_csf"),
+    chm_res1m        = file.path(metrics_root_dir, "chm_res1m"),
+    complexity_res1m = file.path(metrics_root_dir, "complexity_res1m"),
+    rugosity_res5m   = file.path(metrics_root_dir, "rugosity_res5m"),
+    rumple_res5m     = file.path(metrics_root_dir, "rumple_res5m"),
+    fhd_res5m        = file.path(metrics_root_dir, "fhd_res5m"),
+    gap_fraction_res5m  = file.path(metrics_root_dir, "gap_fraction_res5m"),
     vertical_bins_5m = list(
-      root       = vertical_root_dir,
-      summary    = file.path(vertical_root_dir, "summary"),
+      root        = vertical_root_dir,
+      summary     = file.path(vertical_root_dir, "summary"),
       bin_0to2m   = file.path(vertical_root_dir, "bin_0to2m"),
       bin_2to5m   = file.path(vertical_root_dir, "bin_2to5m"),
       bin_5to10m  = file.path(vertical_root_dir, "bin_5to10m"),
       bin_10mplus = file.path(vertical_root_dir, "bin_10mplus")
-    ),
-
-    # NEW: Rugosity outputs
-    rugosity_5m = file.path(metrics_root_dir, "rugosity_res5m")
+    )
   )
 
-  # Create simple folders
-  for (nm in names(subfolder_list)) {
-    if (nm == "vertical_bins_5m") next
-    dir.create(subfolder_list[[nm]], showWarnings = FALSE, recursive = TRUE)
+  for (single_name in names(subfolder_list)) {
+    if (single_name == "vertical_bins_5m") next
+    dir.create(subfolder_list[[single_name]], showWarnings = FALSE, recursive = TRUE)
   }
 
-  # Create vertical bin folders
   for (single_dir in subfolder_list$vertical_bins_5m) {
     dir.create(single_dir, showWarnings = FALSE, recursive = TRUE)
   }
 
-  return(subfolder_list)
+  subfolder_list
 }
 
 utm11_dirs <- create_metrics_subfolders(metrics_utm11_root_dir)
 utm12_dirs <- create_metrics_subfolders(metrics_utm12_root_dir)
 
-# Print for QA so you can SEE where stuff will go
 print(utm11_dirs)
 print(utm12_dirs)
 
+```
 
+## Create Shared Helper Functions and Settings
 
-#### 2) Build CRS - Clean ROI Catalogs      ####
+This will help keep things flowing and reduce redundancy as we create metrics.
 
-# These catalogs point to the already-filtered ROI clips on disk.
-# They do NOT create any new files by themselves.
+```{r Shared Helper Functions and Settings - Pipeline}
+##### Define Shared Helper Functions #####
+# Put all small helper functions in one place so the downstream steps read cleanly
 
-ctg_roi_filtered_utm11 <- lidR::readLAScatalog(roi_filtered_clip_paths_utm11)
-ctg_roi_filtered_utm12 <- lidR::readLAScatalog(roi_filtered_clip_paths_utm12)
-
-# Process by file: chunk_size=0 means each file is processed independently
-lidR::opt_chunk_size(ctg_roi_filtered_utm11) <- 0
-lidR::opt_chunk_buffer(ctg_roi_filtered_utm11) <- 0
-
-lidR::opt_chunk_size(ctg_roi_filtered_utm12) <- 0
-lidR::opt_chunk_buffer(ctg_roi_filtered_utm12) <- 0
-
-lidR::set_lidr_threads(1)
-
-# Optional: print summaries for QA
-ctg_roi_filtered_utm11
-ctg_roi_filtered_utm12
-
-#### 3) CSF Ground Classification (BOTH) ####
-
-# This step creates NEW files on disk:
-# - Output_Files/Filter_Chunks/ground_csf_utm11/*_csf.laz
-# - Output_Files/Filter_Chunks/ground_csf_utm12/*_csf.laz
-
-csf_algorithm_object <- lidR::csf(
-  sloop_smooth = TRUE,
-  class_threshold = 0.5,
-  cloth_resolution = 0.5,
-  rigidness = 2
-)
-
-########## CSF RUN: UTM 11 ##########
-
-lidR::opt_output_files(ctg_roi_filtered_utm11) <- file.path(
-  utm11_dirs$ground_csf,
-  "{ORIGINALFILENAME}_csf.laz"
-)
-
-lidR::catalog_apply(ctg_roi_filtered_utm11, function(cluster) {
-
-  las_object <- lidR::readLAS(cluster)
-  if (lidR::is.empty(las_object)) return(NULL)
-
-  las_object <- lidR::classify_ground(las_object, csf_algorithm_object)
-
-  las_object
-})
-
-########## CSF RUN: UTM 12 ##########
-
-lidR::opt_output_files(ctg_roi_filtered_utm12) <- file.path(
-  utm12_dirs$ground_csf,
-  "{ORIGINALFILENAME}_csf.laz"
-)
-
-lidR::catalog_apply(ctg_roi_filtered_utm12, function(cluster) {
-
-  las_object <- lidR::readLAS(cluster)
-  if (lidR::is.empty(las_object)) return(NULL)
-
-  las_object <- lidR::classify_ground(las_object, csf_algorithm_object)
-
-  las_object
-})
-
-
-########## FIX: DO NOT INCLUDE .las/.laz EXTENSION ##########
-
-lidR::opt_output_files(ctg_roi_filtered_utm11) <- file.path(
-  utm11_dirs$ground_csf,
-  "{ORIGINALFILENAME}_csf"
-)
-
-lidR::opt_output_files(ctg_roi_filtered_utm12) <- file.path(
-  utm12_dirs$ground_csf,
-  "{ORIGINALFILENAME}_csf"
-)
-
-########## FIX: MATCH ANY LAS/LAZ EXTENSION ##########
-
-csf_output_paths_utm11 <- list.files(
-  utm11_dirs$ground_csf,
-  pattern = "_csf\\.(las|laz)$",
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-csf_output_paths_utm12 <- list.files(
-  utm12_dirs$ground_csf,
-  pattern = "_csf\\.(las|laz)$",
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-# If your accidental files are still ".laz.las", match them too:
-if (length(csf_output_paths_utm11) == 0) {
-  csf_output_paths_utm11 <- list.files(
-    utm11_dirs$ground_csf,
-    pattern = "_csf\\.laz\\.las$",
-    full.names = TRUE,
-    ignore.case = TRUE
-  )
-}
-
-if (length(csf_output_paths_utm12) == 0) {
-  csf_output_paths_utm12 <- list.files(
-    utm12_dirs$ground_csf,
-    pattern = "_csf\\.laz\\.las$",
-    full.names = TRUE,
-    ignore.case = TRUE
-  )
-}
-
-stopifnot(length(csf_output_paths_utm11) > 0)
-stopifnot(length(csf_output_paths_utm12) > 0)
-
-########## CLEANUP: RENAME *.laz.las -> *.las ##########
-
-rename_laz_las_double_extension <- function(folder_path) {
-
-  double_extension_file_paths <- list.files(
-    folder_path,
-    pattern = "\\.laz\\.las$",
-    full.names = TRUE,
-    ignore.case = TRUE
-  )
-
-  if (length(double_extension_file_paths) == 0) return(invisible(NULL))
-
-  for (old_path in double_extension_file_paths) {
-
-    new_path <- sub("\\.laz\\.las$", ".las", old_path, ignore.case = TRUE)
-
-    # Do not overwrite anything accidentally
-    if (file.exists(new_path)) next
-
-    file.rename(from = old_path, to = new_path)
-  }
-}
-
-rename_laz_las_double_extension(utm11_dirs$ground_csf)
-rename_laz_las_double_extension(utm12_dirs$ground_csf)
-
-csf_output_paths_utm11 <- list.files(utm11_dirs$ground_csf, pattern = "_csf\\.(las|laz)$", full.names = TRUE, ignore.case = TRUE)
-csf_output_paths_utm12 <- list.files(utm12_dirs$ground_csf, pattern = "_csf\\.(las|laz)$", full.names = TRUE, ignore.case = TRUE)
-
-# Check 
-list.files(utm11_dirs$ground_csf)
-
-#### 4) Build Catalogs from CSF        ####
-
-
-csf_output_paths_utm11 <- list.files(
-  utm11_dirs$ground_csf,
-  pattern = "_csf\\.(las|laz)$",
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-csf_output_paths_utm12 <- list.files(
-  utm12_dirs$ground_csf,
-  pattern = "_csf\\.(las|laz)$",
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-stopifnot(length(csf_output_paths_utm11) > 0)
-stopifnot(length(csf_output_paths_utm12) > 0)
-
-ctg_csf_utm11 <- lidR::readLAScatalog(csf_output_paths_utm11)
-ctg_csf_utm12 <- lidR::readLAScatalog(csf_output_paths_utm12)
-
-lidR::opt_chunk_size(ctg_csf_utm11) <- 0
-lidR::opt_chunk_buffer(ctg_csf_utm11) <- 0
-
-lidR::opt_chunk_size(ctg_csf_utm12) <- 0
-lidR::opt_chunk_buffer(ctg_csf_utm12) <- 0
-
-lidR::set_lidr_threads(1)
-
-#### 5) DTM (1m) for UTM11 and UTM12      ####
-# Outputs:
-# - Output_Files/Filter_Chunks/dtm_res1m_utm11/*_dtm.tif
-# - Output_Files/Filter_Chunks/dtm_res1m_utm12/*_dtm.tif
-
-dtm_fun <- function(cluster, ...) {
-
-  las_object <- lidR::readLAS(cluster)
-  if (lidR::is.empty(las_object)) return(NULL)
-
-  # Skip if there are no ground points
-  if (!any(las_object@data$Classification == 2L)) return(NULL)
-
-  dtm_raster <- lidR::rasterize_terrain(
-    las_object,
-    res = 1,
-    algorithm = lidR::tin()
-  )
-
-  return(dtm_raster)
-}
-
-########## DTM: UTM11 ##########
-
-lidR::opt_output_files(ctg_csf_utm11) <- file.path(
-  utm11_dirs$dtm_res1m,
-  "{ORIGINALFILENAME}_dtm"
-)
-
-lidR::catalog_apply(ctg_csf_utm11, dtm_fun)
-
-########## DTM: UTM12 ##########
-
-lidR::opt_output_files(ctg_csf_utm12) <- file.path(
-  utm12_dirs$dtm_res1m,
-  "{ORIGINALFILENAME}_dtm"
-)
-
-lidR::catalog_apply(ctg_csf_utm12, dtm_fun)
-
-#### 6) Slope + Aspect from DTM (BOTH)    ####
-
-# Outputs:
-# - slope_res1m_utm11/*_slope.tif
-# - aspect_res1m_utm11/*_aspect.tif
-# - slope_res1m_utm12/*_slope.tif
-# - aspect_res1m_utm12/*_aspect.tif
-
-dtm_paths_utm11 <- list.files(
-  utm11_dirs$dtm_res1m,
-  pattern = "_dtm\\.(tif|grd)$",
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-dtm_paths_utm12 <- list.files(
-  utm12_dirs$dtm_res1m,
-  pattern = "_dtm\\.(tif|grd)$",
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-stopifnot(length(dtm_paths_utm11) > 0)
-stopifnot(length(dtm_paths_utm12) > 0)
-
-########## SLOPE/ASPECT: UTM11 ##########
-
-for (single_dtm_path in dtm_paths_utm11) {
-
-  dtm_rast <- terra::rast(single_dtm_path)
-
-  slope_rast  <- terra::terrain(dtm_rast, v = "slope", unit = "degrees")
-  aspect_rast <- terra::terrain(dtm_rast, v = "aspect", unit = "degrees")
-
-  base_name <- tools::file_path_sans_ext(basename(single_dtm_path))
-
-  terra::writeRaster(
-    slope_rast,
-    filename = file.path(utm11_dirs$slope_res1m, paste0(base_name, "_slope.tif")),
-    overwrite = TRUE
-  )
-
-  terra::writeRaster(
-    aspect_rast,
-    filename = file.path(utm11_dirs$aspect_res1m, paste0(base_name, "_aspect.tif")),
-    overwrite = TRUE
-  )
-}
-
-########## SLOPE/ASPECT: UTM12 ##########
-
-for (single_dtm_path in dtm_paths_utm12) {
-
-  dtm_rast <- terra::rast(single_dtm_path)
-
-  slope_rast  <- terra::terrain(dtm_rast, v = "slope", unit = "degrees")
-  aspect_rast <- terra::terrain(dtm_rast, v = "aspect", unit = "degrees")
-
-  base_name <- tools::file_path_sans_ext(basename(single_dtm_path))
-
-  terra::writeRaster(
-    slope_rast,
-    filename = file.path(utm12_dirs$slope_res1m, paste0(base_name, "_slope.tif")),
-    overwrite = TRUE
-  )
-
-  terra::writeRaster(
-    aspect_rast,
-    filename = file.path(utm12_dirs$aspect_res1m, paste0(base_name, "_aspect.tif")),
-    overwrite = TRUE
-  )
-}
-
-#### 7) Normalize Height (BOTH)            ####
-
-# Outputs:
-# - norm_csf_utm11/*_norm.laz
-# - norm_csf_utm12/*_norm.laz
-
-norm_fun <- function(cluster, ...) {
-
-  las_object <- lidR::readLAS(cluster)
-  if (lidR::is.empty(las_object)) return(NULL)
-
-  if (!any(las_object@data$Classification == 2L)) return(NULL)
-
-  normalized_las_object <- lidR::normalize_height(las_object, lidR::tin())
-
-  return(normalized_las_object)
-}
-
-########## NORMALIZE: UTM11 ##########
-
-lidR::opt_output_files(ctg_csf_utm11) <- file.path(
-  utm11_dirs$norm_csf,
-  "{ORIGINALFILENAME}_norm"
-)
-
-lidR::catalog_apply(ctg_csf_utm11, norm_fun)
-
-########## NORMALIZE: UTM12 ##########
-
-lidR::opt_output_files(ctg_csf_utm12) <- file.path(
-  utm12_dirs$norm_csf,
-  "{ORIGINALFILENAME}_norm"
-)
-
-lidR::catalog_apply(ctg_csf_utm12, norm_fun)
-
-#### 8) Build Normalized Catalog (BOTH)             ####
-
-norm_paths_utm11 <- list.files(
-  utm11_dirs$norm_csf,
-  pattern = "_norm\\.(las|laz)$",
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-norm_paths_utm12 <- list.files(
-  utm12_dirs$norm_csf,
-  pattern = "_norm\\.(las|laz)$",
-  full.names = TRUE,
-  ignore.case = TRUE
-)
-
-stopifnot(length(norm_paths_utm11) > 0)
-stopifnot(length(norm_paths_utm12) > 0)
-
-ctg_norm_utm11 <- lidR::readLAScatalog(norm_paths_utm11)
-ctg_norm_utm12 <- lidR::readLAScatalog(norm_paths_utm12)
-
-lidR::opt_chunk_size(ctg_norm_utm11) <- 0
-lidR::opt_chunk_buffer(ctg_norm_utm11) <- 0
-
-lidR::opt_chunk_size(ctg_norm_utm12) <- 0
-lidR::opt_chunk_buffer(ctg_norm_utm12) <- 0
-
-lidR::set_lidr_threads(1)
-
-#### 9) CHM (1m) (BOTH)                      ####
-
-# Outputs:
-# - chm_res1m_utm11/*_chm.tif
-# - chm_res1m_utm12/*_chm.tif
-
-chm_fun <- function(cluster, ...) {
-
-  las_object <- lidR::readLAS(cluster)
-  if (lidR::is.empty(las_object)) return(NULL)
-
-  chm_raster <- lidR::rasterize_canopy(
-    las_object,
-    res = 1,
-    algorithm = lidR::pitfree(c(0,2,5,10,15,20,25), subcircle = 0.2)
-  )
-
-  return(chm_raster)
-}
-
-########## CHM: UTM11 ##########
-
-lidR::opt_output_files(ctg_norm_utm11) <- file.path(
-  utm11_dirs$chm_res1m,
-  "{ORIGINALFILENAME}_chm"
-)
-
-lidR::catalog_apply(ctg_norm_utm11, chm_fun)
-
-########## CHM: UTM12 ##########
-
-lidR::opt_output_files(ctg_norm_utm12) <- file.path(
-  utm12_dirs$chm_res1m,
-  "{ORIGINALFILENAME}_chm"
-)
-
-lidR::catalog_apply(ctg_norm_utm12, chm_fun)
-
-###### Step 10 ######
-###### Vertical bins (5m) + Canopy cover (first returns only; canopy >= 10m) ######
-
-# PURPOSE:
-# - Compute vegetation-only vertical structure metrics in 5x5m cells
-# - Write outputs into per-bin folders + a summary folder
-#
-# IMPORTANT LOGIC:
-# - If there is NO vegetation in a pixel: density/percent/cover = 0 (NOT NA)
-# - Height stats (mean/sd/p95) are NA when there are no points in that bin
-# - Percent-in-bin denominator = vegetation points ONLY (not all points)
-
-####### Step 10 PREP (run once, OUTSIDE any loop) #######
-
-# Extracts a tile key like 11TQG380725 or 12TTM790770 from the filename. Found file names got too long for Windows 
-# Falls back to a shortened basename if the pattern isn't found.
-extract_tile_key <- function(single_norm_path) {
+extract_tile_key_from_path <- function(single_norm_path) {
   file_stem <- tools::file_path_sans_ext(basename(single_norm_path))
 
-  # Pattern: 2 digits + 3 letters + 6 digits (e.g., 11TQG380725)
-  m <- regexpr("\\b\\d{2}[A-Z]{3}\\d{6}\\b", file_stem, perl = TRUE)
+  # Standard spatial tile code pattern such as 11TQG335770
+  matched_pattern <- regexpr("\\b\\d{2}[A-Z]{3}\\d{6}\\b", file_stem, perl = TRUE)
 
-  if (m[1] != -1) {
-    return(regmatches(file_stem, m)[1])
+  if (matched_pattern[1] != -1) {
+    return(regmatches(file_stem, matched_pattern)[1])
   }
 
-  # Fallback: strip very long standardized suffix if present
+  # Fallback: remove long processing suffix if present
   file_stem <- sub("_center500_filtered_.*$", "", file_stem)
 
-  # If still long, hard truncate as last resort
+  # Final fallback: truncate long names
   substr(file_stem, 1, 60)
 }
 
-# Resolution for vertical bin rasters
-vertical_res_m <- 5
-vertical_cell_area_m2 <- vertical_res_m * vertical_res_m
+safe_write_raster <- function(single_raster, output_filename) {
+  tryCatch(
+    terra::writeRaster(single_raster, filename = output_filename, overwrite = TRUE),
+    error = function(e) {
+      stop(
+        "writeRaster failed for:\n  ",
+        output_filename,
+        "\nReason: ",
+        conditionMessage(e)
+      )
+    }
+  )
+}
 
-# Height bins: [low, high)
+replace_na_inf_with_zero <- function(single_raster) {
+  raster_values <- terra::values(single_raster, mat = FALSE)
+  raster_values[is.na(raster_values)] <- 0
+  raster_values[!is.finite(raster_values)] <- 0
+  terra::values(single_raster) <- raster_values
+  single_raster
+}
+
+safe_p95_function <- function(z_values) {
+  if (length(z_values) == 0) return(NA_real_)
+  as.numeric(stats::quantile(z_values, probs = 0.95, na.rm = TRUE, type = 7))
+}
+
+safe_complexity_function <- function(z_values) {
+  if (length(z_values) < 2) return(NA_real_)
+
+  mean_height_value <- mean(z_values, na.rm = TRUE)
+  sd_height_value <- stats::sd(z_values, na.rm = TRUE)
+
+  if (!is.finite(mean_height_value) || mean_height_value <= 0) return(NA_real_)
+  if (!is.finite(sd_height_value)) return(NA_real_)
+
+  sd_height_value / mean_height_value
+}
+
+safe_fhd_function <- function(bin_proportions) {
+  valid_proportions <- bin_proportions[is.finite(bin_proportions) & bin_proportions > 0]
+
+  if (length(valid_proportions) == 0) {
+    return(0)
+  }
+
+  -sum(valid_proportions * log(valid_proportions))
+}
+
+
+##### Define Shared Step Settings #####
+# Keep all major parameter settings together so they are easy to audit/change
+
+vertical_resolution_m <- 5
+vertical_cell_area_m2 <- vertical_resolution_m * vertical_resolution_m
+
 height_bin_definitions <- list(
   bin_0to2m   = c(0, 2),
   bin_2to5m   = c(2, 5),
@@ -1678,393 +887,788 @@ height_bin_definitions <- list(
   bin_10mplus = c(10, Inf)
 )
 
-# "True canopy cover" threshold (for canopy ~15–25m typical, >=10m is reasonable)
-canopy_height_threshold_m <- 10
+# Cover is broad vegetation cover above 2 m
+cover_height_threshold_m <- 2
 
-# Force terra tempdir to a known writable folder (fixes many writeRaster failures)
-terra_tmp <- file.path(output_root_directory, "terra_tmp")
-dir.create(terra_tmp, showWarnings = FALSE, recursive = TRUE)
-terra::terraOptions(tempdir = terra_tmp)
-stopifnot(dir.exists(terra_tmp))
-stopifnot(file.access(terra_tmp, 2) == 0)  # 0 means writable
+# CHM focal smoothing window
+chm_focal_window_matrix_3x3 <- matrix(1, nrow = 3, ncol = 3)
 
-# Safe p95 helper
-p95_fun <- function(z) {
-  if (length(z) == 0) return(NA_real_)
-  as.numeric(stats::quantile(z, probs = 0.95, na.rm = TRUE, type = 7))
-}
+# Cover focal smoothing window
+cover_focal_window_matrix_3x3 <- matrix(1, nrow = 3, ncol = 3)
+apply_cover_focal_smoothing <- TRUE
 
-# WriteRaster wrapper that fails with the exact filename (so debugging is painless)
-safe_write <- function(r, filename) {
-  tryCatch(
-    terra::writeRaster(r, filename = filename, overwrite = TRUE),
-    error = function(e) stop("writeRaster failed for:\n  ", filename, "\nReason: ", conditionMessage(e))
-  )
-}
+# Force terra temp files into a known writable location
+terra_temp_directory <- file.path(output_root_directory, "terra_tmp")
+dir.create(terra_temp_directory, showWarnings = FALSE, recursive = TRUE)
+terra::terraOptions(tempdir = terra_temp_directory)
 
-####### Step 10 FUNCTION #######
+stopifnot(dir.exists(terra_temp_directory))
+stopifnot(file.access(terra_temp_directory, 2) == 0)
 
-compute_and_write_vertical_bins <- function(single_norm_path, vertical_bins_dir_list) {
+```
 
-  ###### 10.1 Load normalized LAS ######
-  las_object <- lidR::readLAS(single_norm_path)
-  if (lidR::is.empty(las_object)) return(invisible(NULL))
 
- # Use tile key for output prefixes (short + meaningful)
-  tile_key <- extract_tile_key(single_norm_path)
-  message("Step 10 (veg-only bins): ", tile_key)
 
-  # Optional but helpful: absolute, normalized output dirs (removes //)
-  summary_dir <- normalizePath(vertical_bins_dir_list$summary, winslash = "\\", mustWork = TRUE)
+## Forest Metrics 
 
-  ###### 10.2 Template grid (geometry only) ######
-  # Using all points ONLY to create the raster grid (extent/resolution)
-  template_count <- lidR::pixel_metrics(las_object, ~length(Z), res = vertical_res_m)
-  if (terra::ncell(template_count) == 0) {
-    message("  SKIP: template grid empty for ", tile_key)
+```{r Forest Metrics - Pipeline}
+##### Compute Vertical Bins Cover And Bin Metrics #####
+
+# PURPOSE:
+# - This is now the main structural-metrics step
+# - It writes:
+#   - summary rasters
+#   - per-bin density / percent / presence
+#   - per-bin meanZ / sdZ / p95Z for 2-5, 5-10, and 10+
+#
+# IMPORTANT LOGIC:
+# vegetation = Classification != 2 and Z > 0
+# density / percent / presence / cover use 0 for empty cells
+# height summary rasters remain NA when no points exist in that bin
+# 0-2 m gets NO meanZ / sdZ / p95Z
+# percent denominator = all vegetation points above 0 m in that pixel
+
+compute_and_write_vertical_bin_metrics <- function(single_norm_path, vertical_bins_directory_list) {
+
+  ##### Load Normalized LAS #####
+
+  normalized_las_object <- lidR::readLAS(single_norm_path)
+
+  if (lidR::is.empty(normalized_las_object)) {
     return(invisible(NULL))
   }
 
-  ###### 10.3 Define vegetation-only points (your metrics are ONLY based on veg) ######
-  veg_all_pts <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
+  tile_key <- extract_tile_key_from_path(single_norm_path)
+  message("Running Step 10 for tile: ", tile_key)
 
-  ###### 10.4 Vegetation count raster (denominator) ######
-  # If there is no vegetation anywhere: veg_count is 0 everywhere (NOT NA)
-  if (lidR::is.empty(veg_all_pts)) {
-    veg_count_rast <- template_count
-    terra::values(veg_count_rast) <- 0
+  summary_directory <- normalizePath(
+    vertical_bins_directory_list$summary,
+    winslash = "\\",
+    mustWork = TRUE
+  )
+
+  ##### Create Template Grid #####
+
+  # The template grid gives us the target geometry for all rasters.
+  # We use all points here ONLY to establish grid alignment.
+  template_count_raster <- lidR::pixel_metrics(
+    normalized_las_object,
+    ~length(Z),
+    res = vertical_resolution_m
+  )
+
+  if (terra::ncell(template_count_raster) == 0) {
+    message("  SKIP: empty template grid for tile ", tile_key)
+    return(invisible(NULL))
+  }
+
+  ##### Select Vegetation Points #####
+
+  vegetation_points_las <- lidR::filter_poi(
+    normalized_las_object,
+    Classification != 2L & Z > 0
+  )
+
+  ##### Compute Total Vegetation Count Raster #####
+
+  if (lidR::is.empty(vegetation_points_las)) {
+
+    vegetation_count_raster <- template_count_raster
+    terra::values(vegetation_count_raster) <- 0
+
   } else {
-    veg_count_rast <- lidR::pixel_metrics(veg_all_pts, ~length(Z), res = vertical_res_m)
 
-    # Rare mismatch insurance
-    if (!terra::compareGeom(template_count, veg_count_rast, stopOnError = FALSE)) {
-      veg_count_rast <- terra::resample(veg_count_rast, template_count, method = "near")
+    vegetation_count_raster <- lidR::pixel_metrics(
+      vegetation_points_las,
+      ~length(Z),
+      res = vertical_resolution_m
+    )
+
+    if (!terra::compareGeom(template_count_raster, vegetation_count_raster, stopOnError = FALSE)) {
+      vegetation_count_raster <- terra::resample(
+        vegetation_count_raster,
+        template_count_raster,
+        method = "near"
+      )
     }
+
+    vegetation_count_raster <- replace_na_inf_with_zero(vegetation_count_raster)
   }
 
-  safe_write(
-    veg_count_rast,
-    file.path(vertical_bins_dir_list$summary, paste0(tile_key, "_vegcount_5m.tif"))
+  safe_write_raster(
+    vegetation_count_raster,
+    file.path(summary_directory, paste0(tile_key, "_vegcount_5m.tif"))
   )
 
-  ###### 10.5 Total vegetation density (points per m²) ######
-  veg_density_rast <- veg_count_rast / vertical_cell_area_m2
+  ##### Compute Total Vegetation Density Raster #####
 
-  safe_write(
-    veg_density_rast,
-    file.path(vertical_bins_dir_list$summary, paste0(tile_key, "_dens_veg_total_5m.tif"))
+  vegetation_density_total_raster <- vegetation_count_raster / vertical_cell_area_m2
+  vegetation_density_total_raster <- replace_na_inf_with_zero(vegetation_density_total_raster)
+
+  safe_write_raster(
+    vegetation_density_total_raster,
+    file.path(summary_directory, paste0(tile_key, "_dens_veg_total_5m.tif"))
   )
 
-  ###### 10.6 Canopy cover (FIRST RETURNS ONLY; veg-only; >= threshold) ######
-  # cover = (# first-return veg points with Z >= threshold) / (# first-return veg points)
-  # if denom=0 => cover=0
+  ##### Compute Broad Vegetation Cover Raster #####
 
-  las_cover <- las_object
+  # Cover is based on first returns only:
+  # (# first-return veg points above 2 m) / (# first-return veg points above 0 m)
 
-  if ("ReturnNumber" %in% names(las_cover@data)) {
-    las_cover <- lidR::filter_poi(las_cover, ReturnNumber == 1L)
+  first_return_vegetation_las <- normalized_las_object
+
+  if ("ReturnNumber" %in% names(first_return_vegetation_las@data)) {
+    first_return_vegetation_las <- lidR::filter_poi(first_return_vegetation_las, ReturnNumber == 1L)
   }
 
-  las_cover <- lidR::filter_poi(las_cover, Classification != 2L & Z > 0)
+  first_return_vegetation_las <- lidR::filter_poi(
+    first_return_vegetation_las,
+    Classification != 2L & Z > 0
+  )
 
-  if (lidR::is.empty(las_cover)) {
-    canopy_cover_rast <- template_count
-    terra::values(canopy_cover_rast) <- 0
+  if (lidR::is.empty(first_return_vegetation_las)) {
+
+    cover_raster_5m <- template_count_raster
+    terra::values(cover_raster_5m) <- 0
+
   } else {
-    canopy_cover_rast <- lidR::pixel_metrics(
-      las_cover,
-      ~ ifelse(length(Z) == 0, 0, sum(Z >= canopy_height_threshold_m) / length(Z)),
-      res = vertical_res_m
+
+    cover_raster_5m <- lidR::pixel_metrics(
+      first_return_vegetation_las,
+      ~ ifelse(length(Z) == 0, 0, sum(Z > cover_height_threshold_m) / length(Z)),
+      res = vertical_resolution_m
     )
 
-    if (!terra::compareGeom(template_count, canopy_cover_rast, stopOnError = FALSE)) {
-      canopy_cover_rast <- terra::resample(canopy_cover_rast, template_count, method = "near")
+    if (!terra::compareGeom(template_count_raster, cover_raster_5m, stopOnError = FALSE)) {
+      cover_raster_5m <- terra::resample(
+        cover_raster_5m,
+        template_count_raster,
+        method = "near"
+      )
     }
+
+    cover_raster_5m <- replace_na_inf_with_zero(cover_raster_5m)
   }
 
-  safe_write(
-    canopy_cover_rast,
-    file.path(
-      vertical_bins_dir_list$summary,
-      paste0(tile_key, "_canopycover_firstreturn_veg_ge", canopy_height_threshold_m, "m_5m.tif")
-    )
+  safe_write_raster(
+    cover_raster_5m,
+    file.path(summary_directory, paste0(tile_key, "_cover_5m.tif"))
   )
 
-  ###### 10.7 Per-bin rasters ######
-  for (bin_name in names(height_bin_definitions)) {
+  ##### Compute Smoothed Cover Raster #####
 
-    zlo <- height_bin_definitions[[bin_name]][1]
-    zhi <- height_bin_definitions[[bin_name]][2]
+  if (isTRUE(apply_cover_focal_smoothing)) {
 
-    # Bin points: veg-only + stratum filter
-    bin_pts <- lidR::filter_poi(veg_all_pts, Z >= zlo & Z < zhi)
-
-    out_dir <- switch(
-      bin_name,
-      bin_0to2m   = vertical_bins_dir_list$bin_0to2m,
-      bin_2to5m   = vertical_bins_dir_list$bin_2to5m,
-      bin_5to10m  = vertical_bins_dir_list$bin_5to10m,
-      bin_10mplus = vertical_bins_dir_list$bin_10mplus
+    cover_focal_mean_raster_5m <- terra::focal(
+      cover_raster_5m,
+      w = cover_focal_window_matrix_3x3,
+      fun = mean,
+      na.policy = "omit",
+      fillvalue = NA
     )
 
-    # Initialize rasters from template
-    bin_count_rast <- template_count
-    bin_mean_rast  <- template_count
-    bin_sd_rast    <- template_count
-    bin_p95_rast   <- template_count
+    cover_focal_mean_raster_5m <- terra::clamp(
+      cover_focal_mean_raster_5m,
+      lower = 0,
+      upper = 1,
+      values = TRUE
+    )
 
-    # Defaults: no points => density/percent=0, stats=NA
-    terra::values(bin_count_rast) <- 0
-    terra::values(bin_mean_rast)  <- NA_real_
-    terra::values(bin_sd_rast)    <- NA_real_
-    terra::values(bin_p95_rast)   <- NA_real_
+    safe_write_raster(
+      cover_focal_mean_raster_5m,
+      file.path(summary_directory, paste0(tile_key, "_cover_f3_5m.tif"))
+    )
+  }
 
-    if (!lidR::is.empty(bin_pts)) {
+  ##### Loop Through Vertical Bins #####
 
-      # Counts
-      bin_count_tmp <- lidR::pixel_metrics(bin_pts, ~length(Z), res = vertical_res_m)
-      if (!terra::compareGeom(template_count, bin_count_tmp, stopOnError = FALSE)) {
-        bin_count_tmp <- terra::resample(bin_count_tmp, template_count, method = "near")
+  for (single_bin_name in names(height_bin_definitions)) {
+
+    single_bin_limits <- height_bin_definitions[[single_bin_name]]
+    single_bin_lower_z <- single_bin_limits[1]
+    single_bin_upper_z <- single_bin_limits[2]
+
+    single_bin_points_las <- lidR::filter_poi(
+      vegetation_points_las,
+      Z >= single_bin_lower_z & Z < single_bin_upper_z
+    )
+
+    single_bin_output_directory <- switch(
+      single_bin_name,
+      bin_0to2m   = vertical_bins_directory_list$bin_0to2m,
+      bin_2to5m   = vertical_bins_directory_list$bin_2to5m,
+      bin_5to10m  = vertical_bins_directory_list$bin_5to10m,
+      bin_10mplus = vertical_bins_directory_list$bin_10mplus
+    )
+
+    ##### Initialize Raster Shells #####
+
+    single_bin_count_raster <- template_count_raster
+    single_bin_presence_raster <- template_count_raster
+    single_bin_mean_z_raster <- template_count_raster
+    single_bin_sd_z_raster <- template_count_raster
+    single_bin_p95_z_raster <- template_count_raster
+
+    terra::values(single_bin_count_raster) <- 0
+    terra::values(single_bin_presence_raster) <- 0
+    terra::values(single_bin_mean_z_raster) <- NA_real_
+    terra::values(single_bin_sd_z_raster) <- NA_real_
+    terra::values(single_bin_p95_z_raster) <- NA_real_
+
+    ##### Populate Bin Count And Presence #####
+
+    if (!lidR::is.empty(single_bin_points_las)) {
+
+      single_bin_count_temp_raster <- lidR::pixel_metrics(
+        single_bin_points_las,
+        ~length(Z),
+        res = vertical_resolution_m
+      )
+
+      if (!terra::compareGeom(template_count_raster, single_bin_count_temp_raster, stopOnError = FALSE)) {
+        single_bin_count_temp_raster <- terra::resample(
+          single_bin_count_temp_raster,
+          template_count_raster,
+          method = "near"
+        )
       }
-      terra::values(bin_count_rast) <- terra::values(bin_count_tmp)
 
-      # Stats
-      bin_mean_tmp <- lidR::pixel_metrics(bin_pts, ~mean(Z),   res = vertical_res_m)
-      bin_sd_tmp   <- lidR::pixel_metrics(bin_pts, ~sd(Z),     res = vertical_res_m)
-      bin_p95_tmp  <- lidR::pixel_metrics(bin_pts, ~p95_fun(Z),res = vertical_res_m)
+      terra::values(single_bin_count_raster) <- terra::values(single_bin_count_temp_raster)
 
-      if (!terra::compareGeom(template_count, bin_mean_tmp, stopOnError = FALSE)) {
-        bin_mean_tmp <- terra::resample(bin_mean_tmp, template_count, method = "near")
-      }
-      if (!terra::compareGeom(template_count, bin_sd_tmp, stopOnError = FALSE)) {
-        bin_sd_tmp <- terra::resample(bin_sd_tmp, template_count, method = "near")
-      }
-      if (!terra::compareGeom(template_count, bin_p95_tmp, stopOnError = FALSE)) {
-        bin_p95_tmp <- terra::resample(bin_p95_tmp, template_count, method = "near")
-      }
+      single_bin_presence_raster <- single_bin_count_raster
+      single_bin_presence_values <- terra::values(single_bin_presence_raster, mat = FALSE)
+      single_bin_presence_values[is.na(single_bin_presence_values)] <- 0
+      single_bin_presence_values[single_bin_presence_values > 0] <- 1
+      terra::values(single_bin_presence_raster) <- single_bin_presence_values
 
-      terra::values(bin_mean_rast) <- terra::values(bin_mean_tmp)
-      terra::values(bin_sd_rast)   <- terra::values(bin_sd_tmp)
-      terra::values(bin_p95_rast)  <- terra::values(bin_p95_tmp)
+      ##### Populate Height Summaries For 2m+ Bins #####
+
+      if (single_bin_name != "bin_0to2m") {
+
+        single_bin_mean_temp_raster <- lidR::pixel_metrics(
+          single_bin_points_las,
+          ~mean(Z),
+          res = vertical_resolution_m
+        )
+
+        single_bin_sd_temp_raster <- lidR::pixel_metrics(
+          single_bin_points_las,
+          ~stats::sd(Z),
+          res = vertical_resolution_m
+        )
+
+        single_bin_p95_temp_raster <- lidR::pixel_metrics(
+          single_bin_points_las,
+          ~safe_p95_function(Z),
+          res = vertical_resolution_m
+        )
+
+        if (!terra::compareGeom(template_count_raster, single_bin_mean_temp_raster, stopOnError = FALSE)) {
+          single_bin_mean_temp_raster <- terra::resample(
+            single_bin_mean_temp_raster,
+            template_count_raster,
+            method = "near"
+          )
+        }
+
+        if (!terra::compareGeom(template_count_raster, single_bin_sd_temp_raster, stopOnError = FALSE)) {
+          single_bin_sd_temp_raster <- terra::resample(
+            single_bin_sd_temp_raster,
+            template_count_raster,
+            method = "near"
+          )
+        }
+
+        if (!terra::compareGeom(template_count_raster, single_bin_p95_temp_raster, stopOnError = FALSE)) {
+          single_bin_p95_temp_raster <- terra::resample(
+            single_bin_p95_temp_raster,
+            template_count_raster,
+            method = "near"
+          )
+        }
+
+        terra::values(single_bin_mean_z_raster) <- terra::values(single_bin_mean_temp_raster)
+        terra::values(single_bin_sd_z_raster) <- terra::values(single_bin_sd_temp_raster)
+        terra::values(single_bin_p95_z_raster) <- terra::values(single_bin_p95_temp_raster)
+      }
     }
 
-    # Density
-    bin_density_rast <- bin_count_rast / vertical_cell_area_m2
+    ##### Compute Bin Density Percent And Presence #####
 
-    # Percent of veg in this bin (veg-only denominator)
-    bin_pct_rast <- bin_count_rast / veg_count_rast
-    bin_pct_rast[!is.finite(bin_pct_rast)] <- 0  # denom=0 => 0
+    single_bin_count_raster <- replace_na_inf_with_zero(single_bin_count_raster)
 
-    # Write
-    safe_write(bin_density_rast, file.path(out_dir, paste0(tile_key, "_dens_5m.tif")))
-    safe_write(bin_pct_rast,     file.path(out_dir, paste0(tile_key, "_pct_5m.tif")))
-    safe_write(bin_mean_rast,    file.path(out_dir, paste0(tile_key, "_meanZ_5m.tif")))
-    safe_write(bin_sd_rast,      file.path(out_dir, paste0(tile_key, "_sdZ_5m.tif")))
-    safe_write(bin_p95_rast,     file.path(out_dir, paste0(tile_key, "_p95Z_5m.tif")))
+    single_bin_density_raster <- single_bin_count_raster / vertical_cell_area_m2
+    single_bin_density_raster <- replace_na_inf_with_zero(single_bin_density_raster)
+
+    single_bin_percent_raster <- single_bin_count_raster / vegetation_count_raster
+    single_bin_percent_raster <- replace_na_inf_with_zero(single_bin_percent_raster)
+
+    ##### Write Bin Outputs #####
+
+    safe_write_raster(
+      single_bin_density_raster,
+      file.path(single_bin_output_directory, paste0(tile_key, "_dens_5m.tif"))
+    )
+
+    safe_write_raster(
+      single_bin_percent_raster,
+      file.path(single_bin_output_directory, paste0(tile_key, "_pct_5m.tif"))
+    )
+
+    safe_write_raster(
+      single_bin_presence_raster,
+      file.path(single_bin_output_directory, paste0(tile_key, "_present_5m.tif"))
+    )
+
+    if (single_bin_name != "bin_0to2m") {
+      safe_write_raster(
+        single_bin_mean_z_raster,
+        file.path(single_bin_output_directory, paste0(tile_key, "_meanZ_5m.tif"))
+      )
+
+      safe_write_raster(
+        single_bin_sd_z_raster,
+        file.path(single_bin_output_directory, paste0(tile_key, "_sdZ_5m.tif"))
+      )
+
+      safe_write_raster(
+        single_bin_p95_z_raster,
+        file.path(single_bin_output_directory, paste0(tile_key, "_p95Z_5m.tif"))
+      )
+    }
   }
 
   invisible(NULL)
 }
 
-####### Step 10 RUNS #######
 
-###### Step 10a ######
-###### RUN VERTICAL BINS: UTM11 ######
+##### Run Vertical Bin Metrics #####
+
 for (single_norm_path in utm11_norm_files_for_loop) {
-  compute_and_write_vertical_bins(single_norm_path, utm11_dirs$vertical_bins_5m)
+  compute_and_write_vertical_bin_metrics(single_norm_path, utm11_dirs$vertical_bins_5m)
 }
 
-###### Step 10b ######
-###### RUN VERTICAL BINS: UTM12 ######
 for (single_norm_path in utm12_norm_files_for_loop) {
-  compute_and_write_vertical_bins(single_norm_path, utm12_dirs$vertical_bins_5m)
+  compute_and_write_vertical_bin_metrics(single_norm_path, utm12_dirs$vertical_bins_5m)
 }
 
-###### Step 10c ######
-###### QA: Do bin % rasters sum to ~1 per pixel? ######
 
-qa_check_bin_pct_sum <- function(vertical_bins_dir_list,
-                                 summary_dir = vertical_bins_dir_list$summary,
-                                 tol = 0.02) {
-  # tol = allowable absolute deviation from 1.0 (e.g., 0.02 = 2%)
+##### QA Check That Bin Percent Rasters Sum To About 1 #####
+# Where vegetation exists, the four bin percentages should sum to ~1
+# This is an important integrity check for the vertical-distribution step
 
-  # For each tile, your rasters live in per-bin folders.
-  # We find matching *_pct_5m.tif files for each bin and group by base_name.
+qa_check_vertical_bin_percent_sum <- function(
+  vertical_bins_directory_list,
+  summary_directory = vertical_bins_directory_list$summary,
+  tolerance = 0.02
+) {
 
-  pct0_files <- list.files(vertical_bins_dir_list$bin_0to2m,   pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
-  pct2_files <- list.files(vertical_bins_dir_list$bin_2to5m,   pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
-  pct5_files <- list.files(vertical_bins_dir_list$bin_5to10m,  pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
-  pct10_files<- list.files(vertical_bins_dir_list$bin_10mplus, pattern = "_pct_5m\\.tif$", full.names = TRUE, ignore.case = TRUE)
+  bin_0to2_percent_paths <- list.files(
+    vertical_bins_directory_list$bin_0to2m,
+    pattern = "_pct_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
 
-  stopifnot(length(pct0_files) > 0, length(pct2_files) > 0, length(pct5_files) > 0, length(pct10_files) > 0)
+  bin_2to5_percent_paths <- list.files(
+    vertical_bins_directory_list$bin_2to5m,
+    pattern = "_pct_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
 
-  # Helper to get base id = everything before "_pct_5m.tif"
-  get_id <- function(x) sub("_pct_5m\\.tif$", "", basename(x), ignore.case = TRUE)
+  bin_5to10_percent_paths <- list.files(
+    vertical_bins_directory_list$bin_5to10m,
+    pattern = "_pct_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
 
-  ids0  <- vapply(pct0_files,  get_id, character(1))
-  ids2  <- vapply(pct2_files,  get_id, character(1))
-  ids5  <- vapply(pct5_files,  get_id, character(1))
-  ids10 <- vapply(pct10_files, get_id, character(1))
+  bin_10plus_percent_paths <- list.files(
+    vertical_bins_directory_list$bin_10mplus,
+    pattern = "_pct_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
 
-  common_ids <- Reduce(intersect, list(ids0, ids2, ids5, ids10))
-  if (length(common_ids) == 0) stop("No matching *_pct_5m.tif sets found across the 4 bins.")
+  stopifnot(length(bin_0to2_percent_paths) > 0)
+  stopifnot(length(bin_2to5_percent_paths) > 0)
+  stopifnot(length(bin_5to10_percent_paths) > 0)
+  stopifnot(length(bin_10plus_percent_paths) > 0)
 
-  message("QA: found ", length(common_ids), " tiles with all 4 bin pct rasters.")
+  extract_id_from_pct_filename <- function(file_path) {
+    sub("_pct_5m\\.tif$", "", basename(file_path), ignore.case = TRUE)
+  }
 
-  # Loop tile-by-tile
-  for (id in common_ids) {
+  ids_bin_0to2 <- vapply(bin_0to2_percent_paths, extract_id_from_pct_filename, character(1))
+  ids_bin_2to5 <- vapply(bin_2to5_percent_paths, extract_id_from_pct_filename, character(1))
+  ids_bin_5to10 <- vapply(bin_5to10_percent_paths, extract_id_from_pct_filename, character(1))
+  ids_bin_10plus <- vapply(bin_10plus_percent_paths, extract_id_from_pct_filename, character(1))
 
-    f0  <- pct0_files[ids0  == id][1]
-    f2  <- pct2_files[ids2  == id][1]
-    f5  <- pct5_files[ids5  == id][1]
-    f10 <- pct10_files[ids10 == id][1]
+  common_tile_ids <- Reduce(
+    intersect,
+    list(ids_bin_0to2, ids_bin_2to5, ids_bin_5to10, ids_bin_10plus)
+  )
 
-    r0  <- terra::rast(f0)
-    r2  <- terra::rast(f2)
-    r5  <- terra::rast(f5)
-    r10 <- terra::rast(f10)
+  if (length(common_tile_ids) == 0) {
+    stop("No matching percent-raster sets found across the four bins.")
+  }
 
-    # Sum of bin percentages
-    r_sum <- r0 + r2 + r5 + r10
-    r_err <- abs(r_sum - 1)
+  message("QA found ", length(common_tile_ids), " tile sets with all four percent rasters.")
 
-    # If you wrote a veg density raster in summary, use it to split "veg present" vs "no veg"
-    # (You may have _dens_total_5m.tif; ideally you'd have _dens_veg_total_5m.tif, but we can use total density as a proxy.)
-    
-vegcount_path <- file.path(summary_dir, paste0(id, "_vegcount_5m.tif"))
-vegcount_r <- if (file.exists(vegcount_path)) terra::rast(vegcount_path) else NULL
+  for (single_tile_id in common_tile_ids) {
 
-if (!is.null(vegcount_r)) {
-  # Pixels with vegetation returns (correct mask for your veg-only bins)
-  mask_has_pts <- vegcount_r > 0
-} else {
-  # Fallback: if vegcount wasn't written, just use non-NA sum pixels
-  mask_has_pts <- !is.na(r_sum)
-}
+    bin_0to2_raster <- terra::rast(bin_0to2_percent_paths[ids_bin_0to2 == single_tile_id][1])
+    bin_2to5_raster <- terra::rast(bin_2to5_percent_paths[ids_bin_2to5 == single_tile_id][1])
+    bin_5to10_raster <- terra::rast(bin_5to10_percent_paths[ids_bin_5to10 == single_tile_id][1])
+    bin_10plus_raster <- terra::rast(bin_10plus_percent_paths[ids_bin_10plus == single_tile_id][1])
 
-    # Stats: where there are points, does it sum close to 1?
-    vals_sum <- terra::values(r_sum, mat = FALSE)
-    vals_err <- terra::values(r_err, mat = FALSE)
-    vals_mask <- terra::values(mask_has_pts, mat = FALSE)
+    summed_bin_percent_raster <- bin_0to2_raster + bin_2to5_raster + bin_5to10_raster + bin_10plus_raster
+    absolute_error_raster <- abs(summed_bin_percent_raster - 1)
 
-    ok_idx <- which(!is.na(vals_sum) & !is.na(vals_mask) & vals_mask)
+    vegetation_count_path <- file.path(summary_directory, paste0(single_tile_id, "_vegcount_5m.tif"))
+    vegetation_count_raster <- if (file.exists(vegetation_count_path)) terra::rast(vegetation_count_path) else NULL
 
-    if (length(ok_idx) == 0) {
-      message("QA SKIP: no valid pixels for ", id)
+    if (!is.null(vegetation_count_raster)) {
+      valid_vegetation_mask <- vegetation_count_raster > 0
+    } else {
+      valid_vegetation_mask <- !is.na(summed_bin_percent_raster)
+    }
+
+    summed_values <- terra::values(summed_bin_percent_raster, mat = FALSE)
+    absolute_error_values <- terra::values(absolute_error_raster, mat = FALSE)
+    mask_values <- terra::values(valid_vegetation_mask, mat = FALSE)
+
+    valid_index <- which(!is.na(summed_values) & !is.na(mask_values) & mask_values)
+
+    if (length(valid_index) == 0) {
+      message("QA SKIP: no valid vegetation pixels for tile ", single_tile_id)
       next
     }
 
-    mean_sum <- mean(vals_sum[ok_idx], na.rm = TRUE)
-    max_err  <- max(vals_err[ok_idx],  na.rm = TRUE)
-    pct_bad  <- mean(vals_err[ok_idx] > tol, na.rm = TRUE) * 100
+    mean_sum_value <- mean(summed_values[valid_index], na.rm = TRUE)
+    max_abs_error_value <- max(absolute_error_values[valid_index], na.rm = TRUE)
+    percent_bad_pixels <- mean(absolute_error_values[valid_index] > tolerance, na.rm = TRUE) * 100
 
-    message("QA ", id, " | mean(sum)=", round(mean_sum, 4),
-            " | max|sum-1|=", round(max_err, 4),
-            " | %pixels>|tol|=", round(pct_bad, 2), "%")
-
-    # Write rasters for visual QA in QGIS
-    terra::writeRaster(r_sum,
-      filename = file.path(summary_dir, paste0(id, "_QA_binsum_pct_5m.tif")),
-      overwrite = TRUE
+    message(
+      "QA ",
+      single_tile_id,
+      " | mean(sum)=",
+      round(mean_sum_value, 4),
+      " | max|sum-1|=",
+      round(max_abs_error_value, 4),
+      " | %pixels>|tol|=",
+      round(percent_bad_pixels, 2),
+      "%"
     )
 
-    terra::writeRaster(r_err,
-      filename = file.path(summary_dir, paste0(id, "_QA_binsum_absErr_5m.tif")),
-      overwrite = TRUE
+    safe_write_raster(
+      summed_bin_percent_raster,
+      file.path(summary_directory, paste0(single_tile_id, "_QA_binsum_pct_5m.tif"))
+    )
+
+    safe_write_raster(
+      absolute_error_raster,
+      file.path(summary_directory, paste0(single_tile_id, "_QA_binsum_absErr_5m.tif"))
     )
   }
 
   invisible(NULL)
 }
 
-###### Step 10c1 ######
-###### RUN QA: UTM11 ######
-qa_check_bin_pct_sum(utm11_dirs$vertical_bins_5m)
+qa_check_vertical_bin_percent_sum(utm11_dirs$vertical_bins_5m)
+qa_check_vertical_bin_percent_sum(utm12_dirs$vertical_bins_5m)
 
-###### Step 10c2 ######
-###### RUN QA: UTM12 ######
-qa_check_bin_pct_sum(utm12_dirs$vertical_bins_5m)
 
-###### Step 11 ######
-###### Rugosity from CHM (SD aggregated to 5m) ######
+##### Compute Foliar Height Diversity From Bin Percent Rasters #####
+# FHD is computed from the proportional distribution of vegetation among bins using the percent rasters generated above
+# INTERPRETATION:
+# low values = vegetation concentrated in fewer layers
+# high values = vegetation distributed more evenly among layers
 
-compute_rugosity_from_chm_folder <- function(chm_folder, rugosity_folder) {
+compute_fhd_from_vertical_bin_percent_rasters <- function(vertical_bins_directory_list, output_folder_path) {
 
-  chm_paths <- list.files(
-    chm_folder,
+  bin_0to2_percent_paths <- list.files(
+    vertical_bins_directory_list$bin_0to2m,
+    pattern = "_pct_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  bin_2to5_percent_paths <- list.files(
+    vertical_bins_directory_list$bin_2to5m,
+    pattern = "_pct_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  bin_5to10_percent_paths <- list.files(
+    vertical_bins_directory_list$bin_5to10m,
+    pattern = "_pct_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  bin_10plus_percent_paths <- list.files(
+    vertical_bins_directory_list$bin_10mplus,
+    pattern = "_pct_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  stopifnot(length(bin_0to2_percent_paths) > 0)
+  stopifnot(length(bin_2to5_percent_paths) > 0)
+  stopifnot(length(bin_5to10_percent_paths) > 0)
+  stopifnot(length(bin_10plus_percent_paths) > 0)
+
+  extract_id_from_pct_filename <- function(file_path) {
+    sub("_pct_5m\\.tif$", "", basename(file_path), ignore.case = TRUE)
+  }
+
+  ids_bin_0to2 <- vapply(bin_0to2_percent_paths, extract_id_from_pct_filename, character(1))
+  ids_bin_2to5 <- vapply(bin_2to5_percent_paths, extract_id_from_pct_filename, character(1))
+  ids_bin_5to10 <- vapply(bin_5to10_percent_paths, extract_id_from_pct_filename, character(1))
+  ids_bin_10plus <- vapply(bin_10plus_percent_paths, extract_id_from_pct_filename, character(1))
+
+  common_tile_ids <- Reduce(
+    intersect,
+    list(ids_bin_0to2, ids_bin_2to5, ids_bin_5to10, ids_bin_10plus)
+  )
+
+  stopifnot(length(common_tile_ids) > 0)
+
+  for (single_tile_id in common_tile_ids) {
+
+    bin_0to2_raster <- terra::rast(bin_0to2_percent_paths[ids_bin_0to2 == single_tile_id][1])
+    bin_2to5_raster <- terra::rast(bin_2to5_percent_paths[ids_bin_2to5 == single_tile_id][1])
+    bin_5to10_raster <- terra::rast(bin_5to10_percent_paths[ids_bin_5to10 == single_tile_id][1])
+    bin_10plus_raster <- terra::rast(bin_10plus_percent_paths[ids_bin_10plus == single_tile_id][1])
+
+    stacked_bin_percent_rasters <- c(
+      bin_0to2_raster,
+      bin_2to5_raster,
+      bin_5to10_raster,
+      bin_10plus_raster
+    )
+
+    fhd_raster <- terra::app(
+      stacked_bin_percent_rasters,
+      fun = safe_fhd_function
+    )
+
+    safe_write_raster(
+      fhd_raster,
+      file.path(output_folder_path, paste0(single_tile_id, "_fhd_5m.tif"))
+    )
+  }
+
+  invisible(NULL)
+}
+
+compute_fhd_from_vertical_bin_percent_rasters(utm11_dirs$vertical_bins_5m, utm11_dirs$fhd_res5m)
+compute_fhd_from_vertical_bin_percent_rasters(utm12_dirs$vertical_bins_5m, utm12_dirs$fhd_res5m)
+
+
+##### Compute Gap Fraction From Cover #####
+# gap fraction = 1 - cover which is derived from the cover rasters already written above
+
+compute_gap_fraction_from_cover_folder <- function(summary_folder_path, output_folder_path) {
+
+  cover_file_paths <- list.files(
+    summary_folder_path,
+    pattern = "_cover_5m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  stopifnot(length(cover_file_paths) > 0)
+
+  for (single_cover_file_path in cover_file_paths) {
+
+    cover_raster <- terra::rast(single_cover_file_path)
+    gap_fraction_raster <- 1 - cover_raster
+
+    cover_base_name <- tools::file_path_sans_ext(basename(single_cover_file_path))
+    gap_base_name <- sub("_cover_5m$", "", cover_base_name)
+
+    safe_write_raster(
+      gap_fraction_raster,
+      file.path(output_folder_path, paste0(gap_base_name, "_gapfrac_5m.tif"))
+    )
+  }
+
+  invisible(NULL)
+}
+
+compute_gap_fraction_from_cover_folder(
+  utm11_dirs$vertical_bins_5m$summary,
+  utm11_dirs$gap_fraction_res5m
+)
+
+compute_gap_fraction_from_cover_folder(
+  utm12_dirs$vertical_bins_5m$summary,
+  utm12_dirs$gap_fraction_res5m
+)
+
+
+##### Compute Rugosity From CHM #####
+# - Rugosity here = SD of 1m CHM heights aggregated to 5m and represents the canopy-surface roughness metric
+
+compute_rugosity_from_chm_folder <- function(chm_folder_path, rugosity_folder_path) {
+
+  chm_file_paths <- list.files(
+    chm_folder_path,
     pattern = "_chm\\.(tif|grd)$",
     full.names = TRUE,
     ignore.case = TRUE
   )
 
-  stopifnot(length(chm_paths) > 0)
+  stopifnot(length(chm_file_paths) > 0)
 
-  for (single_chm_path in chm_paths) {
+  for (single_chm_file_path in chm_file_paths) {
 
-    chm_1m <- terra::rast(single_chm_path)
+    chm_raster_1m <- terra::rast(single_chm_file_path)
 
-    # SD of 1m CHM aggregated to 5m
-    rugosity_sd_5m <- terra::aggregate(chm_1m, fact = 5, fun = sd, na.rm = TRUE)
+    rugosity_sd_raster_5m <- terra::aggregate(
+      chm_raster_1m,
+      fact = 5,
+      fun = sd,
+      na.rm = TRUE
+    )
 
-    base_name <- tools::file_path_sans_ext(basename(single_chm_path))
+    chm_base_name <- tools::file_path_sans_ext(basename(single_chm_file_path))
 
-    terra::writeRaster(
-      rugosity_sd_5m,
-      filename = file.path(rugosity_folder, paste0(base_name, "_rugosity_sd_5m.tif")),
-      overwrite = TRUE
+    safe_write_raster(
+      rugosity_sd_raster_5m,
+      file.path(rugosity_folder_path, paste0(chm_base_name, "_rugosity_sd_5m.tif"))
     )
   }
 
   invisible(NULL)
 }
 
-compute_rugosity_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rugosity_5m)
-compute_rugosity_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rugosity_5m)
+compute_rugosity_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rugosity_res5m)
+compute_rugosity_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rugosity_res5m)
 
-###### Step 12 ######
-###### Complexity (1m) (BOTH) ######
 
-complex_fun <- function(cluster, ...) {
+##### Compute Rumple From CHM #####
+# Rumple index is surface area / planar area
+# We approximate canopy surface area from local CHM slope and then aggregate to 5m
+# NOTE:
+# This is CHM-based rumple, not point-cloud rumple which is usually the more standard interpretation for this metric
 
-  las_object <- lidR::readLAS(cluster)
-  if (lidR::is.empty(las_object)) return(NULL)
+compute_rumple_from_chm_folder <- function(chm_folder_path, rumple_folder_path) {
 
-  las_canopy_only <- lidR::filter_poi(las_object, Classification != 2L & Z > 0)
+  chm_file_paths <- list.files(
+    chm_folder_path,
+    pattern = "_chm\\.(tif|grd)$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
 
-  complexity_raster <- lidR::pixel_metrics(las_canopy_only, ~ sd(Z) / mean(Z), res = 1)
+  stopifnot(length(chm_file_paths) > 0)
 
-  return(complexity_raster)
+  for (single_chm_file_path in chm_file_paths) {
+
+    chm_raster_1m <- terra::rast(single_chm_file_path)
+
+    chm_slope_radians <- terra::terrain(
+      chm_raster_1m,
+      v = "slope",
+      unit = "radians",
+      neighbors = 8
+    )
+
+    cell_resolution <- terra::res(chm_raster_1m)
+    planar_cell_area_m2 <- cell_resolution[1] * cell_resolution[2]
+
+    # Surface area approximation for each CHM cell
+    surface_area_raster_1m <- planar_cell_area_m2 / cos(chm_slope_radians)
+
+    # Aggregate summed surface area into 5m cells
+    surface_area_sum_raster_5m <- terra::aggregate(
+      surface_area_raster_1m,
+      fact = 5,
+      fun = sum,
+      na.rm = TRUE
+    )
+
+    planar_area_raster_5m <- surface_area_sum_raster_5m
+    terra::values(planar_area_raster_5m) <- planar_cell_area_m2 * 25
+
+    rumple_index_raster_5m <- surface_area_sum_raster_5m / planar_area_raster_5m
+
+    chm_base_name <- tools::file_path_sans_ext(basename(single_chm_file_path))
+
+    safe_write_raster(
+      rumple_index_raster_5m,
+      file.path(rumple_folder_path, paste0(chm_base_name, "_rumple_5m.tif"))
+    )
+  }
+
+  invisible(NULL)
 }
 
-###### Step 12a ######
-###### COMPLEXITY: UTM11 ######
+compute_rumple_from_chm_folder(utm11_dirs$chm_res1m, utm11_dirs$rumple_res5m)
+compute_rumple_from_chm_folder(utm12_dirs$chm_res1m, utm12_dirs$rumple_res5m)
+
+
+##### Compute Complexity From Point Cloud At 5m #####
+# Complexity here is a point-cloud structural variability metric:
+# sd(Z) / mean(Z) for vegetation points in each 5m cell
+
+compute_point_cloud_complexity_raster <- function(cluster, ...) {
+
+  normalized_las_object <- lidR::readLAS(cluster)
+
+  if (lidR::is.empty(normalized_las_object)) {
+    return(NULL)
+  }
+
+  vegetation_points_las <- lidR::filter_poi(
+    normalized_las_object,
+    Classification != 2L & Z > 0
+  )
+
+  if (lidR::is.empty(vegetation_points_las)) {
+    return(NULL)
+  }
+
+  complexity_raster_1m <- lidR::pixel_metrics(
+    vegetation_points_las,
+    ~safe_complexity_function(Z),
+    res = 1
+  )
+
+  complexity_raster_1m
+}
 
 lidR::opt_output_files(ctg_norm_utm11) <- file.path(
   utm11_dirs$complexity_res1m,
-  "{ORIGINALFILENAME}_complexity"
+  "{ORIGINALFILENAME}_complexity_1m"
 )
 
-lidR::catalog_apply(ctg_norm_utm11, complex_fun)
-
-###### Step 12b ######
-###### COMPLEXITY: UTM12 ######
+lidR::catalog_apply(ctg_norm_utm11, compute_point_cloud_complexity_raster)
 
 lidR::opt_output_files(ctg_norm_utm12) <- file.path(
   utm12_dirs$complexity_res1m,
-  "{ORIGINALFILENAME}_complexity"
+  "{ORIGINALFILENAME}_complexity_1m"
 )
 
-lidR::catalog_apply(ctg_norm_utm12, complex_fun)
+lidR::catalog_apply(ctg_norm_utm12, compute_point_cloud_complexity_raster)
 
-###### Step 13 ######
-###### FINAL QA: PRINT WHERE OUTPUTS WERE SAVED ######
+
+##### Print Final Output Locations #####
 
 cat("\nDONE.\n")
 cat("All UTM11 outputs saved under: ", metrics_utm11_root_dir, "\n")
 cat("All UTM12 outputs saved under: ", metrics_utm12_root_dir, "\n")
 
-cat("\nUTM11 subfolders:\n"); print(utm11_dirs)
-cat("\nUTM12 subfolders:\n"); print(utm12_dirs)
+cat("\nUTM11 subfolders:\n")
+print(utm11_dirs)
+
+cat("\nUTM12 subfolders:\n")
+print(utm12_dirs)
 ```
 
 # Full Study Area Batched
@@ -2084,6 +1688,7 @@ lidR::set_lidr_threads(1) # keep internal threads low to avoid RAM spikes per wo
 
 ##### Directory Setup #####
 
+
 # Set Root Directory
 project_root_directory <- "R:/CACR_HSM_LiDAR"
 setwd(project_root_directory)
@@ -2092,6 +1697,11 @@ setwd(project_root_directory)
 local_temp_directory <- file.path(project_root_directory, "temp")
 dir.create(local_temp_directory, recursive = TRUE, showWarnings = FALSE)
 Sys.setenv(TMPDIR = local_temp_directory)
+
+
+# Set Root Directory
+project_root_directory <- "C:/Users/brittanieloftin/Desktop/CACR_Proj_Temp"
+setwd(project_root_directory)
 
 # Top-level Directories
 
@@ -2163,6 +1773,15 @@ albion_ground_directory <- file.path(
 )
 
 albion_logs_directory <- file.path(albion_run_root_directory, "logs")
+
+for (single_step_directory in pipeline_step_directories) {
+  dir.create(file.path(southhills_run_root_directory, single_step_directory),
+             recursive = TRUE, showWarnings = FALSE)
+
+  dir.create(file.path(albion_run_root_directory, single_step_directory),
+             recursive = TRUE, showWarnings = FALSE)
+}
+
 ```
 
 Next we want to direct R to where our files live. As a note, each folder is the entire laz dataset for a single flight. File names are not consistent so we will have to tell R to take any LAZ file from within our network drive (R:/). Our shapefile for our study area is also found in this network drive and we will want to load it in because we only want to spend time on tiles that intersect our study area.
@@ -3069,12 +2688,1055 @@ cat(
 )
 
 ```
-
-Okay with our tiles within our study area identified and backed up. We can continue with our pipeline.
+Okay with our tiles within our study area identified and backed up. We can continue with our pipeline. 
 
 ## Load Study Area
 
 We want to load the study area and have R identify which tiles overlap it. Even though we have done something similar with the QGIS and our matched tiles, that was only using the tile code names. This will use the spatial extent of the tiles. First, we will want to verify that the shapefile and LAZ/LAS files are in the same CRS otherwise this whole thing will fail.
+
+```{r Verify CRS}
+# CRS of the shapefile should be EPSG: 8826 but let's confirm
+study_area   <- st_read(study_area_shapefile_path, quiet = TRUE)
+study_area   <- st_make_valid(study_area)
+
+# Ensure we have explicit polygon rows (so [2,] really means boundary 2)
+study_area_polygon_rows <- st_cast(study_area, "POLYGON", warn = FALSE)
+
+st_crs(study_area)
+
+# Try to find LAZ CRS
+h1 <- lidR::readLASheader(tile_files[1])
+las_has_crs <- FALSE
+try({
+     crs_guess <- lidR::st_crs(h1)
+     if (!is.na(crs_guess)) {
+         print(crs_guess)
+         las_has_crs <- TRUE
+     }
+ }, silent = TRUE)
+
+# 1) Pick a representative LAZ from your dataset (any one is fine)
+one_tile <- tile_files[1]
+
+# 2) Read CRS from LAZ header
+h1 <- lidR::readLASheader(one_tile)
+crs_lidar <- lidR::st_crs(h1)   # you already proved this works
+
+crs_lidar  # print it
+
+# Transform study area to match LAZ
+if (is.na(st_crs(study_area))) stop("Study shapefile CRS is NA in R (undefined). Fix it before transforming.")
+
+study_area <- st_transform(study_area, crs_lidar)
+st_crs(study_area) == st_crs(h1) #asks true or false if they match
+```
+
+## Find Only Tiles in Study Area
+
+We do not want to process the entire dataset. We ONLY want those that fall within our study area, so we are going to use the st_intersection function to find only tiles in our study area. Instead of loading in every point cloud or cataloging all of the tiles, we are going to create a table that lists the bounding box of each LAZ/LAS file and use that to find which overlap.
+
+```{r Find the Tiles!}
+# Build a footprint (bbox polygon) for every LAZ/LAS using the header
+study_union <- st_union(study_area)
+
+# --- single pass header read (with tryCatch) ---
+tile_dt <- rbindlist(lapply(tile_files, function(f) {
+  tryCatch({
+    h <- lidR::readLASheader(f)
+    data.table(
+      file = f,
+      ok   = TRUE,
+      xmin = h@PHB[["Min X"]],
+      xmax = h@PHB[["Max X"]],
+      ymin = h@PHB[["Min Y"]],
+      ymax = h@PHB[["Max Y"]]
+    )
+  }, error = function(e) {
+    data.table(file = f, ok = FALSE)
+  })
+}), fill = TRUE)
+
+# --- sanity: header failures ---
+sum(!tile_dt$ok)
+# Save immediately so you don’t redo this step
+saveRDS(tile_dt, "R:/CACR_HSM_LiDAR/04_logs/tile_dt_headers.rds")
+
+# --- sanity: bad extents ---
+bad_extent <- tile_dt[ok == TRUE & (xmax <= xmin | ymax <= ymin | is.na(xmin) | is.na(ymin))]
+nrow(bad_extent)
+# Optional: save a list of problematic files
+if (nrow(bad_extent) > 0) {
+  writeLines(bad_extent$file, "R:/CACR_HSM_LiDAR/04_logs/bad_extent_files.txt")
+}
+
+# --- build polygons only for good headers ---
+tile_ok <- tile_dt[ok == TRUE]
+
+tile_sf <- st_as_sf(tile_ok, coords = c("xmin","ymin"), crs = crs_lidar) # dummy
+tile_sf$geometry <- st_sfc(lapply(seq_len(nrow(tile_ok)), function(i) {
+  st_polygon(list(matrix(
+    c(tile_ok$xmin[i], tile_ok$ymin[i],
+      tile_ok$xmax[i], tile_ok$ymin[i],
+      tile_ok$xmax[i], tile_ok$ymax[i],
+      tile_ok$xmin[i], tile_ok$ymax[i],
+      tile_ok$xmin[i], tile_ok$ymin[i]),
+    ncol = 2, byrow = TRUE
+  )))
+}), crs = crs_lidar)
+
+# --- sanity: CRS match ---
+stopifnot(st_crs(tile_sf) == st_crs(study_union))
+
+# --- intersects ---
+hits <- st_intersects(tile_sf, study_union, sparse = FALSE)[, 1]
+keep_files <- tile_sf$file[hits]
+
+length(tile_files)
+length(keep_files)
+
+# Save keep list for tomorrow
+saveRDS(keep_files, "R:/CACR_HSM_LiDAR/04_logs/keep_files.rds")
+writeLines(keep_files, "R:/CACR_HSM_LiDAR/04_logs/keep_files.txt")
+```
+
+## Filter Tiles
+
+```{r Filter Tiles}
+# Read in kept tiles
+keep_files <- readRDS("R:/CACR_HSM_LiDAR/04_logs/keep_files.rds")
+
+# 1) What is it?
+class(keep_files)
+length(keep_files)
+head(keep_files, 3)
+
+# 2) Do the files actually exist from this machine?
+all(file.exists(keep_files))
+sum(!file.exists(keep_files))    # should be 0
+
+# Catalog from selected tiles
+ctg_filter_AOI <- readLAScatalog(keep_files)
+
+## Set up Filter
+# One output per input tile
+opt_chunk_size(ctg_filter_AOI)   <- 0
+opt_chunk_buffer(ctg_filter_AOI) <- 0
+
+# Parallel + stability
+options(lidR.cores = 8)
+lidR::set_lidr_threads(1)
+
+# Output folders (on R:)
+run_root <- "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run"
+out_filtered <- file.path(run_root, "01_filtered")
+log_dir <- file.path(run_root, "logs")
+dir.create(out_filtered, recursive = TRUE, showWarnings = FALSE)
+dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Unique naming (prevents collisions across flights)
+opt_output_files(ctg_filter_AOI) <- file.path(out_filtered, "{ORIGINALFILENAME}_{ID}_filtered")
+
+# Filter function (won't crash the whole run if 1 tile fails)
+filter_fun_AOI <- function(x, ...) {
+  tryCatch({
+    if (inherits(x, "LAScluster")) x <- readLAS(x)
+    if (is.null(x) || is.empty(x)) return(NULL)
+
+    x <- filter_poi(x, !Withheld_flag & !Synthetic_flag)
+    x <- classify_noise(x, ivf(res = 4, n = 12))
+    x <- filter_poi(x, !Classification %in% c(7L, 18L))
+
+    if (is.empty(x)) return(NULL)
+    x
+  }, error = function(e) {
+    cat(Sys.time(), "- ERROR:", conditionMessage(e), "\n",
+        file = file.path(log_dir, "filter_errors.txt"),
+        append = TRUE)
+    NULL
+  })
+}
+
+# Run (you'll see the lidR progress bar)
+Filter_AOI <- catalog_apply(ctg_filter_AOI, filter_fun_AOI)
+Filter_AOI
+
+########## BUG (Only shows one of 2 areas) ############
+
+# Build tile footprints from keep_files only (fast)
+tile_dt_keep <- data.table::rbindlist(lapply(keep_files, function(f) {
+  h <- lidR::readLASheader(f)
+  data.table::data.table(
+    file = f,
+    xmin = h@PHB[["Min X"]],
+    xmax = h@PHB[["Max X"]],
+    ymin = h@PHB[["Min Y"]],
+    ymax = h@PHB[["Max Y"]]
+  )
+}))
+
+tile_sf_keep <- st_as_sf(tile_dt_keep, coords=c("xmin","ymin"), crs=crs_lidar)
+tile_sf_keep$geometry <- st_sfc(lapply(seq_len(nrow(tile_dt_keep)), function(i) {
+  st_polygon(list(matrix(
+    c(tile_dt_keep$xmin[i], tile_dt_keep$ymin[i],
+      tile_dt_keep$xmax[i], tile_dt_keep$ymin[i],
+      tile_dt_keep$xmax[i], tile_dt_keep$ymax[i],
+      tile_dt_keep$xmin[i], tile_dt_keep$ymax[i],
+      tile_dt_keep$xmin[i], tile_dt_keep$ymin[i]),
+    ncol=2, byrow=TRUE
+  )))
+}), crs=crs_lidar)
+
+# How many kept tiles intersect each boundary?
+n1 <- sum(st_intersects(tile_sf_keep, study_area[1,], sparse=FALSE)[,1])
+n2 <- sum(st_intersects(tile_sf_keep, study_area[2,], sparse=FALSE)[,1])
+c(boundary1_tiles = n1, boundary2_tiles = n2)
+plot(st_geometry(tile_sf_keep), border="grey", lwd=0.2)
+plot(st_geometry(study_area), add=TRUE, border="red", lwd=2)
+```
+
+### Debug Albion Missing Tiles ####
+
+We can see the albion tiles weren't captured in our earlier extraction. We need to figure out the reason and get the albion tiles back in the pipeline.
+
+Files were not captured due to differences in CRS between flights that covered the South Hills and the Ablions. Best course of action is to keep them in separate CRS throughout the pipeline (run them and save them separatly). We will keep the file directory for the South Hills, create a new one for the albions, filter the Albions, and continue down the pipeline.
+
+**After metric rasters area created, we will reproject them into the same CRS.**
+
+```{r Debug missing tiles}
+############# STEP: LiDAR Inventory + CRS Audit (HEADER ONLY) ############
+## Purpose:
+##   1) Confirm ALL flights share ONE CRS (or detect multiple)
+##   2) Confirm we have tile coverage candidates near Study Area 2
+##   3) Produce saved audit tables for reproducibility
+##
+## This does NOT re-filter or write any LAS outputs.
+
+######### 0) Define durable paths ###########
+
+pipeline_log_directory      <- file.path("R:/CACR_HSM_LiDAR/04_logs")
+dir.create(pipeline_log_directory, recursive = TRUE, showWarnings = FALSE)
+
+####### 1) Full tile inventory (do not overwrite generic names) ######
+
+lidar_all_tile_paths_full_inventory <- tile_files  # your existing discovered list
+
+if (length(lidar_all_tile_paths_full_inventory) == 0) {
+  stop("lidar_all_tile_paths_full_inventory is empty. Tile discovery failed.")
+}
+
+######### 2) Read Study Area shapefile while preserving polygon rows #########
+##    DO NOT st_union() this object; we need Albion Section explicitly.
+
+study_area_features_raw   <- st_read(study_area_shapefile_path, quiet = TRUE)
+study_area_features_raw   <- st_make_valid(study_area_features_raw)
+
+# Ensure we have explicit polygon rows (so [2,] really means boundary 2)
+study_area_polygon_rows <- st_cast(study_area_features_raw, "POLYGON", warn = FALSE)
+
+# Prefer attribute-based selection for reproducibility
+study_area_polygon_albion <- study_area_polygon_rows[study_area_polygon_rows$Section == "Albion", ]
+if (nrow(study_area_polygon_albion) != 1) stop("Albion selection did not return.")
+
+study_area_polygon_albion <- study_area_polygon_rows[study_area_polygon_rows$Section == "Albion", ]
+
+######### 3) Build header inventory table INCLUDING CRS per tile ###########
+##    This detects multi-CRS issues across flights.
+
+lidar_header_inventory_table <- rbindlist(lapply(lidar_all_tile_paths_full_inventory, function(single_tile_path) {
+  tryCatch({
+    tile_header_object <- lidR::readLASheader(single_tile_path)
+
+    # Extract extents
+    tile_xmin <- tile_header_object@PHB[["Min X"]]
+    tile_xmax <- tile_header_object@PHB[["Max X"]]
+    tile_ymin <- tile_header_object@PHB[["Min Y"]]
+    tile_ymax <- tile_header_object@PHB[["Max Y"]]
+
+    # CRS from header (may be NA)
+    tile_crs_object <- tryCatch(lidR::st_crs(tile_header_object), error = function(e) NA)
+
+    data.table(
+      tile_path          = single_tile_path,
+      header_read_ok     = TRUE,
+      xmin               = tile_xmin,
+      xmax               = tile_xmax,
+      ymin               = tile_ymin,
+      ymax               = tile_ymax,
+      crs_epsg           = if (is.na(tile_crs_object)) NA_integer_ else tile_crs_object$epsg,
+      crs_wkt            = if (is.na(tile_crs_object)) NA_character_ else tile_crs_object$wkt,
+      flight_folder_name = sub("^R:/([^/]+)/.*", "\\1", single_tile_path)
+    )
+  }, error = function(e) {
+    data.table(
+      tile_path          = single_tile_path,
+      header_read_ok     = FALSE,
+      xmin               = NA_real_,
+      xmax               = NA_real_,
+      ymin               = NA_real_,
+      ymax               = NA_real_,
+      crs_epsg           = NA_integer_,
+      crs_wkt            = NA_character_,
+      flight_folder_name = sub("^R:/([^/]+)/.*", "\\1", single_tile_path)
+    )
+  })
+}), fill = TRUE)
+
+## Save inventory for reproducibility (you never have to re-run header reads)
+saveRDS(
+  lidar_header_inventory_table,
+  file.path(pipeline_log_directory, "lidar_header_inventory_full.rds")
+)
+
+cat("Header read failures:", sum(!lidar_header_inventory_table$header_read_ok), "\n")
+
+###### 4) Flight tile counts (informational; helps spot missing flights) ##########
+
+lidar_tiles_per_flight_folder_table <- lidar_header_inventory_table[
+  , .(tile_count = .N,
+      header_failures = sum(!header_read_ok)),
+  by = flight_folder_name
+][order(-tile_count)]
+
+print(lidar_tiles_per_flight_folder_table)
+
+saveRDS(
+  lidar_tiles_per_flight_folder_table,
+  file.path(pipeline_log_directory, "lidar_tiles_per_flight_folder_table.rds")
+)
+
+##### 5) CRS audit: hard stop if multiple CRSs present among readable tiles ##########
+
+lidar_readable_tiles_table <- lidar_header_inventory_table[header_read_ok == TRUE]
+
+unique_crs_wkt_values <- unique(na.omit(lidar_readable_tiles_table$crs_wkt))
+
+cat("Distinct CRS (WKT) among readable tiles:", length(unique_crs_wkt_values), "\n")
+
+if (length(unique_crs_wkt_values) == 0) {
+  stop("No readable CRS info found in headers. CRS is missing from tiles; cannot guarantee alignment.")
+}
+
+if (length(unique_crs_wkt_values) > 1) {
+  # Show which flights have which CRS
+  crs_by_flight_table <- lidar_readable_tiles_table[
+    , .(n_tiles = .N),
+    by = .(flight_folder_name, crs_epsg)
+  ][order(flight_folder_name, crs_epsg)]
+
+  print(crs_by_flight_table)
+
+  saveRDS(
+    crs_by_flight_table,
+    file.path(pipeline_log_directory, "crs_by_flight_table.rds")
+  )
+
+  stop("MULTIPLE LiDAR CRSs detected across flights. Do NOT mix these in one pipeline run. Split by CRS or reproject.")
+}
+
+# See 3 different CRS used
+
+# Input: lidar_header_inventory_table already exists in your session
+# Output: lidar_crs_group_by_flight_table + saved RDS
+
+lidar_readable_tiles_table <- lidar_header_inventory_table[header_read_ok == TRUE]
+
+# Create a stable CRS "group id" based on WKT text.
+# (We use a short hash-like id derived from the first 60 chars + nchar for readability.)
+lidar_readable_tiles_table[, crs_wkt_prefix := substr(crs_wkt, 1, 60)]
+lidar_readable_tiles_table[, crs_wkt_length := nchar(crs_wkt)]
+
+lidar_crs_group_by_flight_table <- lidar_readable_tiles_table[
+  , .(n_tiles = .N),
+  by = .(flight_folder_name, crs_wkt_prefix, crs_wkt_length)
+][order(flight_folder_name, -n_tiles)]
+
+print(lidar_crs_group_by_flight_table)
+
+saveRDS(
+  lidar_crs_group_by_flight_table,
+  file.path(pipeline_log_directory, "lidar_crs_group_by_flight_table.rds")
+)
+
+##   - Identify which of the 3 CRS WKT strings equals the target CRS
+
+target_lidar_crs_object <- crs_lidar  # reuse your already-defined target CRS object
+target_wkt_string       <- target_lidar_crs_object$wkt
+
+lidar_distinct_crs_table <- data.table(
+  crs_wkt = unique(na.omit(lidar_readable_tiles_table$crs_wkt))
+)
+
+lidar_distinct_crs_table[, wkt_equals_target := (crs_wkt == target_wkt_string)]
+lidar_distinct_crs_table[, crs_wkt_prefix := substr(crs_wkt, 1, 80)]
+lidar_distinct_crs_table[, crs_wkt_length := nchar(crs_wkt)]
+
+print(lidar_distinct_crs_table[, .(wkt_equals_target, crs_wkt_prefix, crs_wkt_length)])
+
+# Same as your target CRS (UTM zone 11N + NAVD88 height Geoid12B) ✅
+
+# 07_Cassia — 142 tiles
+# Part21 — 313 tiles
+# Part22 — 472 tiles
+# ElkoNW_LAZ — mostly target CRS, but mixed (see below)
+
+# Different CRS (UTM zone 12N + NAVD88 height Geoid12B) ❌
+
+# LAZ — 5,449 tiles (zone 12N)
+# SouthernIdaho2018_14_LAZ — 3,299 tiles (zone 12N)
+
+saveRDS(lidar_distinct_crs_table, file.path(pipeline_log_directory, "lidar_distinct_crs_table.rds"))
+
+## COORDINATE RANGE CHECK BY CRS GROUP (SAFE)
+## Purpose: 1) Detect whether CRS groups are truly in different coordinate spaces and 2) If ranges overlap tightly, differences may be metadata-only
+
+coordinate_ranges_by_crs_table <- lidar_readable_tiles_table[
+  , .(
+    xmin_min = min(xmin, na.rm = TRUE),
+    xmax_max = max(xmax, na.rm = TRUE),
+    ymin_min = min(ymin, na.rm = TRUE),
+    ymax_max = max(ymax, na.rm = TRUE),
+    n_tiles  = .N
+  ),
+  by = .(crs_wkt_prefix, crs_wkt_length)
+][order(-n_tiles)]
+
+print(coordinate_ranges_by_crs_table)
+saveRDS(coordinate_ranges_by_crs_table, file.path(pipeline_log_directory, "coordinate_ranges_by_crs_table.rds"))
+
+##### STEP 6: Albion coverage audit by CRS group (HEADER ONLY) ########
+## Purpose:
+##   - Identify which CRS group(s) contain tiles near Albion
+##   - Avoid reprojecting or processing unnecessary tiles
+##   - Save candidate lists to logs for reproducibility
+##
+## Outputs:
+##   - logs/albion_tile_candidates_header_only.rds
+##   - logs/albion_tile_candidates_summary_by_crs_group.rds
+
+# Create a stable CRS group label for each tile (explicit, human-readable)
+albion_tile_candidate_inventory_table <- data.table::copy(lidar_readable_tiles_table)
+
+albion_tile_candidate_inventory_table[, crs_group_label := data.table::fifelse(
+  grepl("UTM zone 12N", crs_wkt, fixed = TRUE), "utm12_geoid12B",
+  data.table::fifelse(
+    grepl("Geoid18", crs_wkt, fixed = TRUE), "utm11_geoid18",
+    "utm11_geoid12B_target"
+  )
+)]
+
+# We will bbox-filter Albion separately within each CRS group
+albion_tile_candidate_inventory_table[, is_within_albion_bbox_in_that_crs := FALSE]
+
+# Loop CRS groups to transform Albion polygon into each group CRS and do a fast bbox overlap test
+for (single_crs_group_label in unique(albion_tile_candidate_inventory_table$crs_group_label)) {
+
+  # Pull one example WKT to define the CRS object for this group
+  example_wkt_for_group <- albion_tile_candidate_inventory_table[
+    crs_group_label == single_crs_group_label, crs_wkt
+  ][1]
+
+  crs_object_for_group <- sf::st_crs(example_wkt_for_group)
+
+  # Transform Albion polygon into this CRS group for apples-to-apples bbox comparison
+  albion_polygon_in_group_crs <- sf::st_transform(study_area_polygon_albion, crs_object_for_group)
+  albion_bbox_in_group_crs    <- sf::st_bbox(albion_polygon_in_group_crs)
+
+  # Flag tiles in this CRS group whose header bbox overlaps Albion bbox
+  albion_tile_candidate_inventory_table[
+    crs_group_label == single_crs_group_label &
+      !(
+        xmax < albion_bbox_in_group_crs["xmin"] |
+        xmin > albion_bbox_in_group_crs["xmax"] |
+        ymax < albion_bbox_in_group_crs["ymin"] |
+        ymin > albion_bbox_in_group_crs["ymax"]
+      ),
+    is_within_albion_bbox_in_that_crs := TRUE
+  ]
+}
+
+# Subset to just Albion bbox candidates (still header-only)
+albion_tile_candidates_header_only_table <- albion_tile_candidate_inventory_table[
+  is_within_albion_bbox_in_that_crs == TRUE
+]
+
+# Summarize: where is Albion coverage likely coming from?
+albion_tile_candidates_summary_by_crs_group <- albion_tile_candidates_header_only_table[
+  , .(n_candidate_tiles = .N),
+  by = .(crs_group_label, flight_folder_name)
+][order(crs_group_label, -n_candidate_tiles)]
+
+print(albion_tile_candidates_summary_by_crs_group)
+
+# Save for reproducibility
+saveRDS(
+  albion_tile_candidates_header_only_table,
+  file.path(pipeline_log_directory, "albion_tile_candidates_header_only.rds")
+)
+
+saveRDS(
+  albion_tile_candidates_summary_by_crs_group,
+  file.path(pipeline_log_directory, "albion_tile_candidates_summary_by_crs_group.rds")
+)
+
+###### STEP 7: Build TRUE intersecting Albion keep lists (HEADER ONLY) ##########
+## Purpose:
+##   - Convert candidate tile header bboxes to footprint polygons
+##   - Perform true intersection with Albion (in each CRS group)
+##   - Save definitive keep lists per CRS group
+##
+## Outputs:
+##   - logs/keep_tiles_albion_by_crs_group_<group>.rds
+##   - logs/keep_tiles_albion_by_crs_group_<group>.txt
+
+albion_tile_candidates_header_only_table <- readRDS(
+  file.path(pipeline_log_directory, "albion_tile_candidates_header_only.rds")
+)
+
+# For each CRS group, build footprints and intersect in that CRS
+for (single_crs_group_label in unique(albion_tile_candidates_header_only_table$crs_group_label)) {
+
+  albion_candidates_in_group_table <- albion_tile_candidates_header_only_table[
+    crs_group_label == single_crs_group_label
+  ]
+
+  # CRS object for this group
+  example_wkt_for_group <- albion_candidates_in_group_table$crs_wkt[1]
+  crs_object_for_group  <- sf::st_crs(example_wkt_for_group)
+
+  # Albion polygon transformed into this group CRS
+  albion_polygon_in_group_crs <- sf::st_transform(study_area_polygon_albion, crs_object_for_group)
+
+  # Build footprint polygons from header extents
+  albion_candidate_footprints_sf <- sf::st_as_sf(
+    albion_candidates_in_group_table,
+    coords = c("xmin","ymin"),
+    crs = crs_object_for_group
+  )
+
+  albion_candidate_footprints_sf$geometry <- sf::st_sfc(lapply(seq_len(nrow(albion_candidates_in_group_table)), function(i) {
+    sf::st_polygon(list(matrix(
+      c(albion_candidates_in_group_table$xmin[i], albion_candidates_in_group_table$ymin[i],
+        albion_candidates_in_group_table$xmax[i], albion_candidates_in_group_table$ymin[i],
+        albion_candidates_in_group_table$xmax[i], albion_candidates_in_group_table$ymax[i],
+        albion_candidates_in_group_table$xmin[i], albion_candidates_in_group_table$ymax[i],
+        albion_candidates_in_group_table$xmin[i], albion_candidates_in_group_table$ymin[i]),
+      ncol = 2, byrow = TRUE
+    )))
+  }), crs = crs_object_for_group)
+
+  # True intersection
+  albion_true_intersects_logical <- lengths(sf::st_intersects(albion_candidate_footprints_sf, albion_polygon_in_group_crs)) > 0
+
+  albion_keep_tile_paths_in_group <- albion_candidate_footprints_sf$tile_path[albion_true_intersects_logical]
+
+  cat("Albion true intersect tiles for", single_crs_group_label, ":", length(albion_keep_tile_paths_in_group), "\n")
+
+  # Save keep list
+  keep_list_rds_path <- file.path(
+    pipeline_log_directory,
+    paste0("keep_tiles_albion_by_crs_group_", single_crs_group_label, ".rds")
+  )
+
+  keep_list_txt_path <- file.path(
+    pipeline_log_directory,
+    paste0("keep_tiles_albion_by_crs_group_", single_crs_group_label, ".txt")
+  )
+
+  saveRDS(albion_keep_tile_paths_in_group, keep_list_rds_path)
+  writeLines(albion_keep_tile_paths_in_group, keep_list_txt_path)
+}
+
+# showing only 191 tiles but QGIS shows 232 total for flights 17 and 14
+
+######## 5A: Albion TRUE intersect from ALL UTM12 tiles (NO header rereads) ########
+## Purpose:
+##   - Remove any possibility that bbox-candidate logic dropped tiles
+##   - Use existing lidar_header_inventory_table extents as footprints
+##   - Produce authoritative counts by flight folder
+##
+## Inputs assumed to exist:
+##   - lidar_header_inventory_table
+##   - study_area_polygon_albion
+##   - pipeline_log_directory
+
+
+# 1) Identify the exact UTM12 CRS WKT from your distinct CRS table (no guessing)
+utm12_geoid12B_wkt_string <- lidar_distinct_crs_table[
+  grepl('UTM zone 12N', crs_wkt, fixed = TRUE) & grepl('Geoid12B', crs_wkt, fixed = TRUE),
+  crs_wkt
+][1]
+
+if (is.na(utm12_geoid12B_wkt_string) || length(utm12_geoid12B_wkt_string) == 0) {
+  stop("Could not find UTM zone 12N + Geoid12B CRS WKT in lidar_distinct_crs_table.")
+}
+
+utm12_geoid12B_crs_object <- sf::st_crs(utm12_geoid12B_wkt_string)
+
+# 2) Subset header inventory to just UTM12 tiles (this should be LAZ + SouthernIdaho2018_14_LAZ)
+utm12_tile_header_inventory_table <- lidar_header_inventory_table[
+  header_read_ok == TRUE & crs_wkt == utm12_geoid12B_wkt_string
+]
+
+# 3) Transform Albion polygon into UTM12 CRS
+albion_polygon_in_utm12_crs <- sf::st_transform(study_area_polygon_albion, utm12_geoid12B_crs_object)
+
+# 4) Build footprint polygons from header extents (bbox polygons)
+utm12_tile_footprints_sf <- sf::st_as_sf(
+  utm12_tile_header_inventory_table,
+  coords = c("xmin", "ymin"),
+  crs = utm12_geoid12B_crs_object
+)
+
+utm12_tile_footprints_sf$geometry <- sf::st_sfc(lapply(seq_len(nrow(utm12_tile_header_inventory_table)), function(i) {
+  sf::st_polygon(list(matrix(
+    c(utm12_tile_header_inventory_table$xmin[i], utm12_tile_header_inventory_table$ymin[i],
+      utm12_tile_header_inventory_table$xmax[i], utm12_tile_header_inventory_table$ymin[i],
+      utm12_tile_header_inventory_table$xmax[i], utm12_tile_header_inventory_table$ymax[i],
+      utm12_tile_header_inventory_table$xmin[i], utm12_tile_header_inventory_table$ymax[i],
+      utm12_tile_header_inventory_table$xmin[i], utm12_tile_header_inventory_table$ymin[i]),
+    ncol = 2, byrow = TRUE
+  )))
+}), crs = utm12_geoid12B_crs_object)
+
+# 5) TRUE intersects
+albion_intersects_logical_utm12 <- lengths(sf::st_intersects(utm12_tile_footprints_sf, albion_polygon_in_utm12_crs)) > 0
+albion_keep_tile_paths_utm12_truth <- utm12_tile_footprints_sf$tile_path[albion_intersects_logical_utm12]
+
+cat("Albion TRUE intersect tiles in UTM12 (truth set):", length(albion_keep_tile_paths_utm12_truth), "\n")
+
+# 6) Summarize by flight folder
+albion_keep_tile_counts_by_flight_folder_table <- utm12_tile_header_inventory_table[
+  tile_path %in% albion_keep_tile_paths_utm12_truth,
+  .(n_tiles = .N),
+  by = flight_folder_name
+][order(-n_tiles)]
+
+print(albion_keep_tile_counts_by_flight_folder_table)
+
+# 7) Save outputs for reproducibility
+saveRDS(
+  albion_keep_tile_paths_utm12_truth,
+  file.path(pipeline_log_directory, "keep_tiles_albion_truthset_utm12_geoid12B.rds")
+)
+
+writeLines(
+  albion_keep_tile_paths_utm12_truth,
+  file.path(pipeline_log_directory, "keep_tiles_albion_truthset_utm12_geoid12B.txt")
+)
+
+saveRDS(
+  albion_keep_tile_counts_by_flight_folder_table,
+  file.path(pipeline_log_directory, "albion_keep_tile_counts_by_flight_folder_table.rds")
+)
+# shows 17 has 162 tiles and 14 has 29
+
+##### 5B: Albion bbox-overlap tile count in UTM12 (upper bound) #####
+## Purpose:
+##   - Compare bbox-overlap (looser) vs true polygon intersects (tighter)
+
+albion_bbox_in_utm12_crs <- sf::st_bbox(albion_polygon_in_utm12_crs)
+
+albion_bbox_overlap_logical_utm12 <- !(
+  utm12_tile_header_inventory_table$xmax < albion_bbox_in_utm12_crs["xmin"] |
+  utm12_tile_header_inventory_table$xmin > albion_bbox_in_utm12_crs["xmax"] |
+  utm12_tile_header_inventory_table$ymax < albion_bbox_in_utm12_crs["ymin"] |
+  utm12_tile_header_inventory_table$ymin > albion_bbox_in_utm12_crs["ymax"]
+)
+
+albion_bbox_overlap_tile_paths_utm12 <- utm12_tile_header_inventory_table$tile_path[albion_bbox_overlap_logical_utm12]
+
+cat("Albion bbox-overlap tiles in UTM12 (upper bound):", length(albion_bbox_overlap_tile_paths_utm12), "\n")
+
+
+############ Step 6A PRE-RUN QA: Albion tile selection (HEADER ONLY) ##################
+## Purpose:
+##   - Confirm coverage visually BEFORE filtering
+##   - Quantify what you’re excluding (and from which flights)
+##   - Save tile lists so the expensive step uses a locked input set
+##
+## Inputs expected (already in your session from earlier work):
+##   - utm12_tile_header_inventory_table
+##   - albion_polygon_in_utm12_crs
+##   - utm12_geoid12B_crs_object
+##   - albion_keep_tile_paths_utm12_truth          (191)
+##   - albion_bbox_overlap_tile_paths_utm12        (364)
+##   - albion_log_directory (or pipeline_log_directory if you prefer)
+
+
+# --- Durable QA output directory (do not overwrite South Hills logs) ---
+albion_qa_log_directory <- file.path(albion_run_root_directory, "logs")
+dir.create(albion_qa_log_directory, recursive = TRUE, showWarnings = FALSE)
+
+# --- Define sets ---
+albion_tiles_true_intersect_paths <- albion_keep_tile_paths_utm12_truth
+albion_tiles_bbox_overlap_paths   <- albion_bbox_overlap_tile_paths_utm12
+albion_tiles_bbox_only_paths      <- setdiff(albion_tiles_bbox_overlap_tile_paths_utm12, albion_keep_tile_paths_utm12_truth)
+
+cat("TRUE_INTERSECT tiles:", length(albion_tiles_true_intersect_paths), "\n")
+cat("BBOX_OVERLAP tiles:", length(albion_tiles_bbox_overlap_paths), "\n")
+cat("BBOX_ONLY extra tiles:", length(albion_tiles_bbox_only_paths), "\n")
+
+
+############ Step 6B PRE-FILTER QA (Albion): 191 TRUE_INTERSECT vs 364 BBOX_OVERLAP ####
+## Purpose:
+##   - Define the two tile sets explicitly (so objects exist)
+##   - Summarize by flight folder
+##   - Create a visual footprint plot for each set
+## Notes:
+##   - Header-only (fast)
+##   - Does NOT filter any LAS files
+
+
+## 0) Safety: confirm required inputs exist
+
+if (!exists("albion_keep_tile_paths_utm12_truth")) stop("Missing albion_keep_tile_paths_utm12_truth (191 TRUE_INTERSECT).")
+if (!exists("albion_bbox_overlap_tile_paths_utm12")) stop("Missing albion_bbox_overlap_tile_paths_utm12 (364 BBOX_OVERLAP).")
+if (!exists("utm12_tile_header_inventory_table")) stop("Missing utm12_tile_header_inventory_table.")
+if (!exists("albion_polygon_in_utm12_crs")) stop("Missing albion_polygon_in_utm12_crs.")
+if (!exists("utm12_geoid12B_crs_object")) stop("Missing utm12_geoid12B_crs_object.")
+if (!exists("albion_run_root_directory")) stop("Missing albion_run_root_directory.")
+
+## 1) Define the two comparison sets (THIS fixes your error)
+
+albion_tiles_true_intersect_paths <- albion_keep_tile_paths_utm12_truth      # 191
+albion_tiles_bbox_overlap_paths   <- albion_bbox_overlap_tile_paths_utm12    # 364
+albion_tiles_bbox_only_paths      <- setdiff(albion_tiles_bbox_overlap_paths, albion_tiles_true_intersect_paths)
+
+cat("Albion TRUE_INTERSECT tiles:", length(albion_tiles_true_intersect_paths), "\n")
+cat("Albion BBOX_OVERLAP tiles:", length(albion_tiles_bbox_overlap_paths), "\n")
+cat("Albion BBOX_ONLY extra tiles:", length(albion_tiles_bbox_only_paths), "\n")
+
+## 2) Count by flight folder (191 vs 364, plus the extra-only set)
+
+albion_true_intersect_counts_by_flight_table <- utm12_tile_header_inventory_table[
+  tile_path %in% albion_tiles_true_intersect_paths,
+  .(n_tiles = .N),
+  by = flight_folder_name
+][order(-n_tiles)]
+
+albion_bbox_overlap_counts_by_flight_table <- utm12_tile_header_inventory_table[
+  tile_path %in% albion_tiles_bbox_overlap_paths,
+  .(n_tiles = .N),
+  by = flight_folder_name
+][order(-n_tiles)]
+
+albion_bbox_only_counts_by_flight_table <- utm12_tile_header_inventory_table[
+  tile_path %in% albion_tiles_bbox_only_paths,
+  .(n_tiles = .N),
+  by = flight_folder_name
+][order(-n_tiles)]
+
+cat("\n--- TRUE_INTERSECT counts by flight ---\n")
+print(albion_true_intersect_counts_by_flight_table)
+
+cat("\n--- BBOX_OVERLAP counts by flight ---\n")
+print(albion_bbox_overlap_counts_by_flight_table)
+
+cat("\n--- BBOX_ONLY (extra) counts by flight ---\n")
+print(albion_bbox_only_counts_by_flight_table)
+
+saveRDS(albion_true_intersect_counts_by_flight_table, file.path(albion_qa_log_directory, "qa_true_intersect_counts_by_flight_table.rds"))
+saveRDS(albion_bbox_overlap_counts_by_flight_table,   file.path(albion_qa_log_directory, "qa_bbox_overlap_counts_by_flight_table.rds"))
+saveRDS(albion_bbox_only_counts_by_flight_table,      file.path(albion_qa_log_directory, "qa_bbox_only_counts_by_flight_table.rds"))
+
+
+## 3) Build footprint polygons helper (header-only)
+
+build_bbox_footprints_from_header_table <- function(tile_header_table_in, crs_object_in) {
+
+  tile_footprints_sf <- sf::st_as_sf(tile_header_table_in, coords = c("xmin","ymin"), crs = crs_object_in)
+
+  tile_footprints_sf$geometry <- sf::st_sfc(lapply(seq_len(nrow(tile_header_table_in)), function(i) {
+    sf::st_polygon(list(matrix(
+      c(tile_header_table_in$xmin[i], tile_header_table_in$ymin[i],
+        tile_header_table_in$xmax[i], tile_header_table_in$ymin[i],
+        tile_header_table_in$xmax[i], tile_header_table_in$ymax[i],
+        tile_header_table_in$xmin[i], tile_header_table_in$ymax[i],
+        tile_header_table_in$xmin[i], tile_header_table_in$ymin[i]),
+      ncol = 2, byrow = TRUE
+    )))
+  }), crs = crs_object_in)
+
+  tile_footprints_sf
+}
+
+
+## 4) Visual QA plots (191 vs 364, plus extra-only)
+
+albion_true_intersect_header_table <- utm12_tile_header_inventory_table[tile_path %in% albion_tiles_true_intersect_paths]
+albion_bbox_overlap_header_table   <- utm12_tile_header_inventory_table[tile_path %in% albion_tiles_bbox_overlap_paths]
+albion_bbox_only_header_table      <- utm12_tile_header_inventory_table[tile_path %in% albion_tiles_bbox_only_paths]
+
+albion_true_intersect_footprints_sf <- build_bbox_footprints_from_header_table(albion_true_intersect_header_table, utm12_geoid12B_crs_object)
+albion_bbox_overlap_footprints_sf   <- build_bbox_footprints_from_header_table(albion_bbox_overlap_header_table,   utm12_geoid12B_crs_object)
+albion_bbox_only_footprints_sf      <- build_bbox_footprints_from_header_table(albion_bbox_only_header_table,      utm12_geoid12B_crs_object)
+
+plot(sf::st_geometry(albion_true_intersect_footprints_sf), border = "grey40", lwd = 0.4,
+     main = "Albion PRE-FILTER QA: TRUE_INTERSECT tiles (191)")
+plot(sf::st_geometry(albion_polygon_in_utm12_crs), add = TRUE, border = "red", lwd = 2)
+
+plot(sf::st_geometry(albion_bbox_overlap_footprints_sf), border = "grey40", lwd = 0.4,
+     main = "Albion PRE-FILTER QA: BBOX_OVERLAP tiles (364)")
+plot(sf::st_geometry(albion_polygon_in_utm12_crs), add = TRUE, border = "red", lwd = 2)
+
+plot(sf::st_geometry(albion_bbox_only_footprints_sf), border = "orange3", lwd = 0.5,
+     main = "Albion PRE-FILTER QA: BBOX_ONLY tiles (364 - 191 extras)")
+plot(sf::st_geometry(albion_polygon_in_utm12_crs), add = TRUE, border = "red", lwd = 2)
+
+# Intersect looks correct so lets save those
+
+## 5) Save the tile lists you can choose from for filtering
+
+saveRDS(albion_tiles_true_intersect_paths, file.path(albion_qa_log_directory, "qa_keep_tiles_albion_TRUE_INTERSECT_191.rds"))
+writeLines(albion_tiles_true_intersect_paths, file.path(albion_qa_log_directory, "qa_keep_tiles_albion_TRUE_INTERSECT_191.txt"))
+
+
+albion_true_intersect_counts_by_flight <- utm12_tile_header_inventory_table[
+  tile_path %in% albion_tiles_true_intersect_paths,
+  .(n_tiles = .N),
+  by = flight_folder_name
+][order(-n_tiles)]
+
+print(albion_true_intersect_counts_by_flight)
+
+saveRDS(albion_true_intersect_counts_by_flight, file.path(albion_qa_log_directory, "qa_albion_true_intersect_counts_by_flight.rds"))
+
+cat("\nPRE-FILTER QA complete. Choose which list to filter from:\n")
+cat(" - TRUE_INTERSECT:", file.path(albion_qa_log_directory, "qa_keep_tiles_albion_TRUE_INTERSECT_191.rds"), "\n")
+
+#### Step 7 Filter Pathway #####
+
+albion_filtered_output_directory <- file.path(albion_run_root_directory, "01_filtered")
+albion_log_directory             <- file.path(albion_run_root_directory, "logs")
+
+dir.create(albion_filtered_output_directory, recursive = TRUE, showWarnings = FALSE)
+dir.create(albion_log_directory, recursive = TRUE, showWarnings = FALSE)
+
+#### Load Intersect Tiles ####
+
+albion_qa_keep_list_true_intersect_rds_path <- file.path(
+  albion_log_directory,
+  "qa_keep_tiles_albion_TRUE_INTERSECT_191.rds"
+)
+
+if (!file.exists(albion_qa_keep_list_true_intersect_rds_path)) {
+  stop("QA keep list not found: ", albion_qa_keep_list_true_intersect_rds_path)
+}
+
+albion_tile_paths_selected_for_filtering <- readRDS(albion_qa_keep_list_true_intersect_rds_path)
+
+if (length(albion_tile_paths_selected_for_filtering) == 0) {
+  stop("QA keep list is empty. Cannot filter.")
+}
+
+# Confirm all inputs exist on disk (prevents mid-run failures)
+albion_missing_input_tiles_logical <- !file.exists(albion_tile_paths_selected_for_filtering)
+
+if (any(albion_missing_input_tiles_logical)) {
+  missing_paths <- albion_tile_paths_selected_for_filtering[albion_missing_input_tiles_logical]
+  writeLines(missing_paths, file.path(albion_log_directory, "albion_missing_input_tile_paths.txt"))
+  stop("Some Albion input tiles do not exist on disk. See: albion_missing_input_tile_paths.txt")
+}
+
+cat("Albion tiles selected for filtering (QA TRUE_INTERSECT):", length(albion_tile_paths_selected_for_filtering), "\n")
+
+## Save a “locked” copy of what this run used (reproducibility)
+saveRDS(
+  albion_tile_paths_selected_for_filtering,
+  file.path(albion_log_directory, "albion_tile_paths_used_for_filtering_TRUE_INTERSECT_191.rds")
+)
+
+#### Skip-if-already-filtered Safegaurd #####
+
+albion_existing_filtered_output_files <- list.files(
+  path = albion_filtered_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = FALSE,
+  ignore.case = TRUE
+)
+
+albion_input_tile_stems <- tools::file_path_sans_ext(basename(albion_tile_paths_selected_for_filtering))
+
+albion_tile_already_filtered_logical <- vapply(albion_input_tile_stems, function(single_stem) {
+  any(startsWith(albion_existing_filtered_output_files, paste0(single_stem, "_")))
+}, logical(1))
+
+albion_tile_paths_remaining_to_filter <- albion_tile_paths_selected_for_filtering[!albion_tile_already_filtered_logical]
+
+cat("Albion tiles already filtered in Albion folder:", sum(albion_tile_already_filtered_logical), "\n")
+cat("Albion tiles remaining to filter:", length(albion_tile_paths_remaining_to_filter), "\n")
+
+saveRDS(
+  albion_tile_paths_remaining_to_filter,
+  file.path(albion_log_directory, "albion_tile_paths_remaining_to_filter_TRUE_INTERSECT_191.rds")
+)
+
+if (length(albion_tile_paths_remaining_to_filter) == 0) {
+  message("All QA-approved Albion tiles already have filtered outputs. Skipping filtering.")
+} else {
+
+#### Build Catalog ####  
+  albion_las_catalog_for_filtering <- lidR::readLAScatalog(albion_tile_paths_remaining_to_filter)
+
+  # One output per input tile (no chunking)
+  lidR::opt_chunk_size(albion_las_catalog_for_filtering)   <- 0
+  lidR::opt_chunk_buffer(albion_las_catalog_for_filtering) <- 0
+
+  # Unique output naming to avoid collisions
+  lidR::opt_output_files(albion_las_catalog_for_filtering) <- file.path(
+    albion_filtered_output_directory,
+    "{ORIGINALFILENAME}_{ID}_filtered"
+  )
+
+  # Parallel settings (stable)
+  options(lidR.cores = 8)
+  lidR::set_lidr_threads(1)
+
+#### Albion Filter Function (later we will use one function and apply to both areas) ####
+  
+   albion_filter_function <- function(x, ...) {
+    tryCatch({
+
+      if (inherits(x, "LAScluster")) x <- lidR::readLAS(x)
+      if (is.null(x) || lidR::is.empty(x)) return(NULL)
+
+      x <- lidR::filter_poi(x, !Withheld_flag & !Synthetic_flag)
+      x <- lidR::classify_noise(x, lidR::ivf(res = 4, n = 12))
+      x <- lidR::filter_poi(x, !Classification %in% c(7L, 18L))
+
+      if (lidR::is.empty(x)) return(NULL)
+      x
+
+    }, error = function(e) {
+
+      cat(
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        "- Albion filter ERROR:",
+        conditionMessage(e),
+        "\n",
+        file = file.path(albion_log_directory, "albion_filter_errors.txt"),
+        append = TRUE
+      )
+
+      NULL
+    })
+   }
+  
+#### Step 8 Run Filter #####
+  
+   albion_filter_apply_result <- lidR::catalog_apply(albion_las_catalog_for_filtering, albion_filter_function)
+  print(albion_filter_apply_result)
+
+  cat("Albion filtering complete. Outputs in:\n", albion_filtered_output_directory, "\n")
+}
+  
+#### Step 9 Post-run QA ####
+
+albion_filtered_output_tile_paths <- list.files(
+  path = albion_filtered_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+cat("Albion filtered outputs present:", length(albion_filtered_output_tile_paths), "\n")
+
+saveRDS(
+  albion_filtered_output_tile_paths,
+  file.path(albion_log_directory, "albion_filtered_output_tile_paths_TRUE_INTERSECT_191.rds")
+)  
+
+```
+
+Albions tiles are saved and filtered. We also should verify that the Elko runs didn't have issues since they had 2 CRS listed
+
+```{r Check Elko Tiles}
+### Elko had mixed CRS so we want to make sure they were all included in the filter ####
+
+## CHECK 1: Total Elko tiles by CRS group (header-only) to confirm ElkoNW_LAZ is split and how many tiles are in each CRS
+
+elko_tile_inventory_table <- lidar_readable_tiles_table[
+  flight_folder_name == "ElkoNW_LAZ"
+]
+
+elko_tile_counts_by_crs_table <- elko_tile_inventory_table[
+  , .(n_tiles = .N),
+  by = .(crs_wkt_prefix, crs_wkt_length)
+][order(-n_tiles)]
+
+print(elko_tile_counts_by_crs_table)
+
+## CHECK 2: Were any Elko tiles excluded from keep_files?
+## Purpose:
+##   - Compare total Elko tiles vs Elko tiles selected for processing
+##   - If excluded_count > 0, tiles were dropped by selection logic
+
+# Load the keep list you used for the successful run
+study_area1_keep_tile_paths <- readRDS(file.path(pipeline_log_directory, "keep_files.rds"))
+
+# Elko tiles that exist vs Elko tiles that were selected
+elko_all_tile_paths <- elko_tile_inventory_table$tile_path
+elko_selected_tile_paths <- intersect(elko_all_tile_paths, study_area1_keep_tile_paths)
+
+cat("Elko total tiles in folder:", length(elko_all_tile_paths), "\n")
+cat("Elko tiles included in keep_files:", length(elko_selected_tile_paths), "\n")
+cat("Elko tiles excluded:", length(setdiff(elko_all_tile_paths, study_area1_keep_tile_paths)), "\n")
+
+# Save excluded list for reproducibility
+elko_excluded_tile_paths <- setdiff(elko_all_tile_paths, study_area1_keep_tile_paths)
+
+saveRDS(
+  elko_excluded_tile_paths,
+  file.path(pipeline_log_directory, "elko_tiles_excluded_from_keep_files.rds")
+)
+writeLines(
+  elko_excluded_tile_paths,
+  file.path(pipeline_log_directory, "elko_tiles_excluded_from_keep_files.txt")
+)
+
+## CHECK 3: Do excluded Elko tiles intersect South Hills boundary?
+## Purpose: determine if exclusions are “real” or a CRS/selection artifact
+
+south_hills_polygon_feature <- study_area_polygon_rows[study_area_polygon_rows$Section == "South Hills", ]
+
+# Use the TARGET CRS for the AOI transform (same one you used in run)
+south_hills_polygon_in_target_crs <- st_transform(south_hills_polygon_feature, crs_lidar)
+
+# Build footprints for excluded Elko tiles
+elko_excluded_tile_paths <- readRDS(file.path(pipeline_log_directory, "elko_tiles_excluded_from_keep_files.rds"))
+
+elko_excluded_footprint_table <- rbindlist(lapply(elko_excluded_tile_paths, function(single_tile_path) {
+  h <- lidR::readLASheader(single_tile_path)
+  data.table(
+    tile_path = single_tile_path,
+    xmin = h@PHB[["Min X"]],
+    xmax = h@PHB[["Max X"]],
+    ymin = h@PHB[["Min Y"]],
+    ymax = h@PHB[["Max Y"]]
+  )
+}))
+
+elko_excluded_footprint_sf <- st_as_sf(elko_excluded_footprint_table, coords=c("xmin","ymin"), crs=crs_lidar)
+elko_excluded_footprint_sf$geometry <- st_sfc(lapply(seq_len(nrow(elko_excluded_footprint_table)), function(i) {
+  st_polygon(list(matrix(
+    c(elko_excluded_footprint_table$xmin[i], elko_excluded_footprint_table$ymin[i],
+      elko_excluded_footprint_table$xmax[i], elko_excluded_footprint_table$ymin[i],
+      elko_excluded_footprint_table$xmax[i], elko_excluded_footprint_table$ymax[i],
+      elko_excluded_footprint_table$xmin[i], elko_excluded_footprint_table$ymax[i],
+      elko_excluded_footprint_table$xmin[i], elko_excluded_footprint_table$ymin[i]),
+    ncol=2, byrow=TRUE
+  )))
+}), crs=crs_lidar)
+
+excluded_tiles_that_should_intersect <- lengths(st_intersects(elko_excluded_footprint_sf, south_hills_polygon_in_target_crs)) > 0
+
+cat("Excluded Elko tiles that actually intersect South Hills:", sum(excluded_tiles_that_should_intersect), "\n")
+
+```
+
+
+We will want to verify that the shapefile and LAZ/LAS files are in the same CRS otherwise this whole thing will fail.
+
 
 ```{r Verify CRS}
 # CRS of the shapefile should be EPSG: 8826 but let's confirm
@@ -4130,6 +4792,7 @@ albion_ground_output_directory <- file.path(albion_run_root_directory, "02_groun
 albion_log_directory <- file.path(albion_run_root_directory, "logs")
 
 # South Hills
+southhills_run_root_directory <- "R:/CACR_HSM_LiDAR/Output_Files/FullArea_Run"
 southhills_filtered_output_directory <- file.path(southhills_run_root_directory, "01_filtered")
 southhills_ground_output_directory <- file.path(southhills_run_root_directory, "02_ground_csf")
 southhills_log_directory <- file.path(southhills_run_root_directory, "logs")
@@ -4165,6 +4828,7 @@ stopifnot(length(southhills_filtered_files) > 0)
 stopifnot(all(file.exists(albion_filtered_files)))
 stopifnot(all(file.exists(southhills_filtered_files)))
 
+# Simple helper: can we read LAZ/LAS headers?
 header_ok <- function(f) {
   h <- try(lidR::readLASheader(f), silent = TRUE)
   !inherits(h, "try-error")
@@ -4194,6 +4858,15 @@ cat(
   "\n"
 )
 
+# Check a sample of the files from each study area befoer launching the run
+stopifnot(all(vapply(albion_filtered_files[1:min(10, length(albion_filtered_files))], header_ok, logical(1))))
+stopifnot(all(vapply(southhills_filtered_files[1:min(10, length(southhills_filtered_files))], header_ok, logical(1))))
+
+# Count existing Classified files
+cat("Albion existing CSF outputs:",
+    length(list.files(albion_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n") # How many files existing
+cat("South Hills existing CSF outputs:",
+    length(list.files(southhills_ground_output_directory, pattern="\\.(las|laz)$", ignore.case=TRUE)), "\n") # How many files existing
 
 ##### 2) Define CSF algorithm object #####
 
@@ -4206,10 +4879,9 @@ csf_ground_fullArea <- lidR::csf(
 
 
 ##### 3) Study area run list #####
-
 # PURPOSE:
 # Store paths in a common structure for the initial resume-safe catalog run.
-
+# This makes it easy to run the same logic on both study areas
 study_area_run_list <- list(
   list(
     study_area_name = "Albion",
@@ -4228,6 +4900,7 @@ study_area_run_list <- list(
 
 ##### 4) Helper: list filtered tiles #####
 
+# Small helper to prevent repeat list.files() later
 list_filtered_tile_paths <- function(filtered_directory_path) {
   list.files(
     path = filtered_directory_path,
@@ -4239,7 +4912,6 @@ list_filtered_tile_paths <- function(filtered_directory_path) {
 
 
 ##### 5) Helper: rename existing CSF outputs to stable names #####
-
 # PURPOSE:
 # Rename already-created CSF outputs that contain an extra catalog ID so they
 # match the stable naming scheme:
@@ -4247,6 +4919,21 @@ list_filtered_tile_paths <- function(filtered_directory_path) {
 
 rename_csf_outputs_to_stable_names <- function(ground_directory_path) {
 
+## I found that the pipeline was having trouble with the naming scheme that it was trying to generate. It was giving a ID to each tile after the filtering and classification step. This was creating snags in the pipeline as it wasn't connecting the filter tile to the classification that needed to be completed.
+## IMPORTANT:
+## This is the one-time cleanup step that fixes files already written with names like:
+##   tile_filtered_1_csf.las
+##   tile_filtered_2_csf.las
+##
+## and renames them to:
+##   tile_filtered_csf.las
+##
+## This means:
+## - DO NOT manually delete the already processed files
+## - this function renames them in place
+## - if a stable-name version already exists, it skips instead of overwriting
+
+rename_csf_outputs_to_stable_names <- function(ground_directory_path) {
   existing_csf_output_paths <- list.files(
     ground_directory_path,
     pattern = "\\.(las|laz)$",
@@ -4254,6 +4941,7 @@ rename_csf_outputs_to_stable_names <- function(ground_directory_path) {
     ignore.case = TRUE
   )
 
+  # Nothing to do if folder is empty
   if (length(existing_csf_output_paths) == 0) {
     message("No CSF outputs found in: ", ground_directory_path)
     return(invisible(NULL))
@@ -4261,6 +4949,10 @@ rename_csf_outputs_to_stable_names <- function(ground_directory_path) {
 
   existing_csf_output_base_names <- basename(existing_csf_output_paths)
 
+  # Identify files that end in _<number>_csf.las or _<number>_csf.laz
+  # Examples:
+  #   tile_filtered_1_csf.las
+  #   tile_filtered_22_csf.laz
   has_extra_catalog_id_logical <- grepl(
     "_[0-9]+_csf\\.(las|laz)$",
     existing_csf_output_base_names,
@@ -4278,6 +4970,9 @@ rename_csf_outputs_to_stable_names <- function(ground_directory_path) {
 
     single_old_base_name <- basename(single_old_path)
 
+    # Remove only the trailing _<number> immediately before _csf
+    # Example:
+    #   abc_filtered_14_csf.las -> abc_filtered_csf.las
     single_new_base_name <- sub(
       "_[0-9]+(_csf\\.(las|laz)$)",
       "\\1",
@@ -4287,6 +4982,9 @@ rename_csf_outputs_to_stable_names <- function(ground_directory_path) {
 
     single_new_path <- file.path(ground_directory_path, single_new_base_name)
 
+
+    # Safety check:
+    # if the stable target name already exists, skip so we do not overwrite files
     if (file.exists(single_new_path)) {
       warning(
         "Skipping rename because target already exists:\n",
@@ -4308,6 +5006,7 @@ rename_csf_outputs_to_stable_names <- function(ground_directory_path) {
 
 
 ##### 6) One-time rename of already processed CSF outputs #####
+## Run this BEFORE the main loop so all existing outputs are standardized first
 
 rename_csf_outputs_to_stable_names(albion_ground_output_directory)
 rename_csf_outputs_to_stable_names(southhills_ground_output_directory)
@@ -4319,6 +5018,14 @@ rename_csf_outputs_to_stable_names(southhills_ground_output_directory)
 # A filtered tile is considered done if:
 # - filtered_stem + "_csf.las" exists OR filtered_stem + "_csf.laz" exists
 # - and the output header is readable
+
+## DONE means:
+##  - exact expected output exists:
+##      filtered_stem + "_csf.las"
+##      OR filtered_stem + "_csf.laz"
+##  - AND output header is readable
+##
+## This is much safer and simpler than wildcard matching once names are standardized
 
 detect_valid_csf_outputs <- function(filtered_tile_paths, ground_dir) {
 
@@ -4339,10 +5046,13 @@ detect_valid_csf_outputs <- function(filtered_tile_paths, ground_dir) {
     candidate_output_paths <- c(expected_las_output_path, expected_laz_output_path)
     candidate_output_paths <- candidate_output_paths[file.exists(candidate_output_paths)]
 
+
+    # If neither .las nor .laz exists, this tile is not done
     if (length(candidate_output_paths) == 0) {
       return(FALSE)
     }
-
+    
+    # At least one existing candidate must have a readable header
     any(vapply(candidate_output_paths, function(single_output_path) {
       single_header <- try(lidR::readLASheader(single_output_path), silent = TRUE)
       !inherits(single_header, "try-error")
@@ -4355,10 +5065,12 @@ detect_valid_csf_outputs <- function(filtered_tile_paths, ground_dir) {
 
 
 ##### 8) Helper: build CSF worker function #####
-
 # PURPOSE:
 # Build a catalog_apply() worker that classifies one tile/chunk and writes
 # errors to a study-area-specific log instead of crashing the whole run.
+## This is the function catalog_apply() runs on each tile/chunk.
+## If a tile errors, we write the message to a study-area-specific log file
+## and return NULL so the whole run does not crash immediately.
 
 make_csf_ground_function <- function(study_area_name, log_directory_path, csf_algorithm_object) {
 
@@ -4406,6 +5118,56 @@ make_csf_ground_function <- function(study_area_name, log_directory_path, csf_al
 # First try the standard catalog workflow. Already-complete tiles are skipped.
 # Any South Hills leftovers after this step are handled with the overlap logic below.
 
+##### 9) See which South Hills files are still truly missing #####
+## This is just a diagnostic block.
+## It is NOT required for the run, but it is useful for confirming the count
+## after renaming has standardized the old outputs.
+
+southhills_classified_files <- list.files(
+  southhills_ground_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+southhills_filtered_base_names <- tools::file_path_sans_ext(
+  basename(southhills_filtered_files)
+)
+
+southhills_classified_base_names <- tools::file_path_sans_ext(
+  basename(southhills_classified_files)
+)
+
+# Remove trailing "_csf" only
+southhills_classified_base_names_clean <- sub(
+  "_csf$",
+  "",
+  southhills_classified_base_names,
+  ignore.case = TRUE
+)
+
+southhills_missing_base_names <- setdiff(
+  southhills_filtered_base_names,
+  southhills_classified_base_names_clean
+)
+
+southhills_missing_files <- southhills_filtered_files[
+  southhills_filtered_base_names %in% southhills_missing_base_names
+]
+
+cat("South Hills true missing files after rename:", length(southhills_missing_files), "\n")
+head(southhills_missing_files, 20)
+
+##### 10) MAIN LOOP: resume where it left off #####
+## This is the main classification run.
+## IMPORTANT CHANGE:
+## output names now use:
+##   {ORIGINALFILENAME}_csf
+## NOT:
+##   {ORIGINALFILENAME}_{ID}_csf
+##
+## That removes the extra chunk/catalog ID and keeps names stable.
+
 for (single_run in study_area_run_list) {
 
   study_area_name <- single_run$study_area_name
@@ -4428,6 +5190,7 @@ for (single_run in study_area_run_list) {
 
   cat(study_area_name, "filtered tiles found:", length(filtered_tile_paths), "\n")
 
+  # Resume-safe skip logic using exact stable names
   already_done_logical <- detect_valid_csf_outputs(filtered_tile_paths, ground_dir)
   remaining_tile_paths <- filtered_tile_paths[!already_done_logical]
 
@@ -4444,16 +5207,27 @@ for (single_run in study_area_run_list) {
     next
   }
 
+  # Read only the remaining tiles into a LAScatalog
   ctg_remaining <- lidR::readLAScatalog(remaining_tile_paths)
 
   lidR::opt_chunk_size(ctg_remaining)   <- 0
   lidR::opt_chunk_buffer(ctg_remaining) <- 0
 
+  # One file = one processing unit
+  # chunk_size = 0 means use the original files directly
+  lidR::opt_chunk_size(ctg_remaining)   <- 0
+  lidR::opt_chunk_buffer(ctg_remaining) <- 0
+
+  # Stable naming:
+  # input:  tile_filtered.las
+  # output: tile_filtered_csf.las
   lidR::opt_output_files(ctg_remaining) <- file.path(
     ground_dir,
     "{ORIGINALFILENAME}_csf"
   )
 
+  # Use multiple cores at the catalog level
+  # Keep lidR internal threads to 1 to avoid nested threading issues
   options(lidR.cores = 8)
   lidR::set_lidr_threads(1)
 
@@ -4469,6 +5243,9 @@ for (single_run in study_area_run_list) {
   cat("\nCSF classification finished for ", study_area_name, ". Outputs in:\n", ground_dir, "\n")
 }
 
+##### SOUTH HILLS MISSING 522 TILES DEBUGGING ###
+# South Hills kept getting stuck in the pipeline and not generating classified tiles
+# Goal: Figure out what is causing the snag since it appears that the naming has been changed and no longer should cause issues. 
 
 ##### 10) Rebuild South Hills remaining tile list AFTER resume-safe run #####
 
@@ -4477,6 +5254,539 @@ for (single_run in study_area_run_list) {
 
 southhills_filtered_files <- list.files(
   southhills_filtered_output_directory,
+
+  #### Debug A) Check whether most recent South Hills classification are readable ####
+
+# List South Hills classified outputs with file info
+southhills_classified_files_info <- file.info(southhills_classified_files)
+
+# Order by modification time, newest first
+southhills_classified_files_ordered <- rownames(
+  southhills_classified_files_info[order(southhills_classified_files_info$mtime, decreasing = TRUE), ]
+)
+
+# Pull the 7 most recently modified outputs
+southhills_last_7_outputs <- southhills_classified_files_ordered[1:min(7, length(southhills_classified_files_ordered))]
+
+# Show them
+southhills_last_7_outputs
+
+# Check whether each of those outputs has a readable LAS header
+southhills_last_7_headers_ok <- vapply(
+  southhills_last_7_outputs,
+  function(single_output_path) {
+    single_header <- try(lidR::readLASheader(single_output_path), silent = TRUE)
+    !inherits(single_header, "try-error")
+  },
+  logical(1)
+)
+
+# Print result
+data.frame(
+  output_path = southhills_last_7_outputs,
+  header_ok   = southhills_last_7_headers_ok
+)
+
+#### Debug B) Refresh the South Hills classified file list AFTER rename ####
+
+southhills_classified_files <- list.files(
+  southhills_ground_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+length(southhills_classified_files)
+head(basename(southhills_classified_files), 20)
+
+# Check if any old naming still exists
+
+southhills_old_style_names <- list.files(
+  southhills_ground_output_directory,
+  pattern = "_[0-9]+_csf\\.(las|laz)$",
+  full.names = FALSE,
+  ignore.case = TRUE
+)
+
+cat("Old-style South Hills names still present:", length(southhills_old_style_names), "\n")
+head(southhills_old_style_names, 20)
+
+# Are new names stable 
+
+head(
+  list.files(
+    southhills_ground_output_directory,
+    pattern = "_csf\\.(las|laz)$",
+    full.names = FALSE,
+    ignore.case = TRUE
+  ),
+  20
+)
+
+#### Debug C) Rebuild South Hills remaining tile list from scratch AFTER rename ####
+
+southhills_filtered_files <- list.files(
+  southhills_filtered_output_directory,
+  pattern = "\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+southhills_already_done_logical <- detect_valid_csf_outputs(
+  filtered_tile_paths = southhills_filtered_files,
+  ground_dir          = southhills_ground_output_directory
+)
+
+southhills_remaining_tile_paths <- southhills_filtered_files[!southhills_already_done_logical]
+
+cat("South Hills tiles already done:", sum(southhills_already_done_logical), "\n")
+cat("South Hills tiles remaining   :", length(southhills_remaining_tile_paths), "\n")
+
+head(southhills_remaining_tile_paths, 20)
+
+#### Debug D) Manually test the first remaining South Hills tile ####
+
+southhills_test_tile_path <- southhills_remaining_tile_paths[1]
+southhills_test_tile_path
+
+southhills_test_output_path <- file.path(
+  southhills_ground_output_directory,
+  paste0(tools::file_path_sans_ext(basename(southhills_test_tile_path)), "_csf.las")
+)
+
+southhills_test_output_path
+
+# Read one tile manually
+southhills_test_las <- lidR::readLAS(southhills_test_tile_path)
+
+# Check that it loaded
+is.null(southhills_test_las)
+lidR::is.empty(southhills_test_las)
+
+if (!is.null(southhills_test_las) && !lidR::is.empty(southhills_test_las)) {
+  print(southhills_test_las)
+  cat("Point count:", lidR::npoints(southhills_test_las), "\n")
+}
+
+# Run CSF manually on one tile
+#southhills_test_las <- lidR::classify_ground(southhills_test_las, csf_ground_fullArea)
+
+# Average Tile took 20 - 30 minutes to process if it takes longer we should cancel the run --> Failed
+
+
+##### Debug E) Identify and manage duplicated spatial tile codes #####
+
+filtered_base <- basename(southhills_filtered_files)
+
+filtered_stem <- tools::file_path_sans_ext(filtered_base)
+
+# remove "_filtered"
+filtered_core <- sub("_filtered$", "", filtered_stem)
+
+# remove trailing flight ID
+spatial_tile <- sub("_[0-9]+$", "", filtered_core)
+
+tile_table <- table(spatial_tile)
+
+duplicated_tiles <- names(tile_table[tile_table > 1])
+
+length(duplicated_tiles)
+
+# Examined in QGIS some appear to be partial overlaps which is why the name duplicates across flights, but there are some that do not make sense like which in CloudCompare appear to be the same area USGS_LPC_ID_SouthernID_2018_D19_11TQG350875_474_filtered and USGS_LPC_ID_SouthernID_2018_D19_11TQG350875_151_filtered
+
+# Build inventory table for REMAINING South Hills files only
+## GOAL:
+## Create a table for the 522 remaining files that includes:
+## - full path
+## - filename
+## - spatial tile code
+## - source suffix
+## - xmin/xmax/ymin/ymax from LAS header
+##
+## IMPORTANT:
+## Files with the same spatial tile code are only "candidates" for overlap review.
+## We will compare extents before deciding anything.
+
+southhills_remaining_inventory <- data.frame(
+  filtered_path = southhills_remaining_tile_paths,
+  filtered_base = basename(southhills_remaining_tile_paths),
+  stringsAsFactors = FALSE
+)
+
+# Remove extension
+southhills_remaining_inventory$filtered_stem <- tools::file_path_sans_ext(
+  southhills_remaining_inventory$filtered_base
+)
+
+# Remove trailing "_filtered"
+southhills_remaining_inventory$stem_no_filtered <- sub(
+  "_filtered$",
+  "",
+  southhills_remaining_inventory$filtered_stem
+)
+
+# Extract trailing numeric suffix
+southhills_remaining_inventory$source_suffix <- sub(
+  "^.*_([0-9]+)$",
+  "\\1",
+  southhills_remaining_inventory$stem_no_filtered
+)
+
+# Remove trailing suffix to get the shared spatial code
+southhills_remaining_inventory$spatial_tile_code <- sub(
+  "_[0-9]+$",
+  "",
+  southhills_remaining_inventory$stem_no_filtered
+)
+
+# Helper function: read LAS header safely and pull extent info
+read_extent_from_header <- function(single_file_path) {
+
+  single_header <- try(lidR::readLASheader(single_file_path), silent = TRUE)
+
+  if (inherits(single_header, "try-error")) {
+    return(data.frame(
+      xmin = NA_real_,
+      xmax = NA_real_,
+      ymin = NA_real_,
+      ymax = NA_real_,
+      npoints_header = NA_real_,
+      header_ok = FALSE
+    ))
+  }
+
+  data.frame(
+    xmin = single_header@PHB[["Min X"]],
+    xmax = single_header@PHB[["Max X"]],
+    ymin = single_header@PHB[["Min Y"]],
+    ymax = single_header@PHB[["Max Y"]],
+    npoints_header = single_header@PHB[["Number of point records"]],
+    header_ok = TRUE
+  )
+}
+
+# Read extent info for all remaining files
+southhills_remaining_extent_list <- lapply(
+  southhills_remaining_inventory$filtered_path,
+  read_extent_from_header
+)
+
+southhills_remaining_extent_table <- do.call(
+  rbind,
+  southhills_remaining_extent_list
+)
+
+# Combine into one inventory table
+southhills_remaining_inventory <- cbind(
+  southhills_remaining_inventory,
+  southhills_remaining_extent_table
+)
+
+# Count how many files share each spatial tile code
+southhills_remaining_inventory$spatial_tile_count <- ave(
+  southhills_remaining_inventory$spatial_tile_code,
+  southhills_remaining_inventory$spatial_tile_code,
+  FUN = length
+)
+
+# Quick summary
+cat("Remaining South Hills files:", nrow(southhills_remaining_inventory), "\n")
+cat("Headers readable:", sum(southhills_remaining_inventory$header_ok), "\n")
+cat("Repeated spatial tile codes:",
+    length(unique(southhills_remaining_inventory$spatial_tile_code[
+      southhills_remaining_inventory$spatial_tile_count > 1
+    ])), "\n")
+
+#  Save South Hills remaining extent inventory #####
+
+write.csv(
+  southhills_remaining_inventory,
+  file.path(southhills_log_directory, "SouthHills_remaining_extent_inventory.csv"),
+  row.names = FALSE
+)
+
+#  Subset repeated spatial tile code groups only #####
+## These are the groups that need extent comparison
+
+southhills_repeated_groups_inventory <- southhills_remaining_inventory[
+  southhills_remaining_inventory$spatial_tile_count > 1,
+]
+
+cat("Files in repeated-code groups:", nrow(southhills_repeated_groups_inventory), "\n")
+cat("Number of repeated-code groups:",
+    length(unique(southhills_repeated_groups_inventory$spatial_tile_code)), "\n")
+
+head(
+  southhills_repeated_groups_inventory[
+    order(southhills_repeated_groups_inventory$spatial_tile_code),
+    c("filtered_base", "spatial_tile_code", "source_suffix", "xmin", "xmax", "ymin", "ymax", "npoints_header")
+  ],
+  20
+)
+
+#  Compare extents within repeated spatial tile code groups
+## GOAL:
+## For each repeated-code group, compare bounding boxes.
+##
+## We calculate:
+## - area of file A
+## - area of file B
+## - overlap area
+## - overlap proportion relative to the smaller file
+##
+## INTERPRETATION:
+## overlap_proportion_near_1 = almost same footprint
+## moderate overlap          = partial overlap
+## near_0                    = likely not meaningfully overlapping
+
+calculate_bbox_overlap <- function(xmin1, xmax1, ymin1, ymax1,
+                                   xmin2, xmax2, ymin2, ymax2) {
+
+  x_overlap <- max(0, min(xmax1, xmax2) - max(xmin1, xmin2))
+  y_overlap <- max(0, min(ymax1, ymax2) - max(ymin1, ymin2))
+
+  overlap_area <- x_overlap * y_overlap
+
+  area1 <- (xmax1 - xmin1) * (ymax1 - ymin1)
+  area2 <- (xmax2 - xmin2) * (ymax2 - ymin2)
+
+  smaller_area <- min(area1, area2)
+
+  overlap_proportion_smaller <- if (smaller_area > 0) overlap_area / smaller_area else NA_real_
+
+  data.frame(
+    area1 = area1,
+    area2 = area2,
+    overlap_area = overlap_area,
+    overlap_proportion_smaller = overlap_proportion_smaller
+  )
+}
+
+southhills_overlap_results <- list()
+
+repeated_codes <- unique(southhills_repeated_groups_inventory$spatial_tile_code)
+
+for (single_code in repeated_codes) {
+
+  single_group <- southhills_repeated_groups_inventory[
+    southhills_repeated_groups_inventory$spatial_tile_code == single_code,
+  ]
+
+  # Compare every pair within the group
+  if (nrow(single_group) >= 2) {
+
+    group_pairs <- utils::combn(seq_len(nrow(single_group)), 2)
+
+    for (pair_index in seq_len(ncol(group_pairs))) {
+
+      i <- group_pairs[1, pair_index]
+      j <- group_pairs[2, pair_index]
+
+      overlap_stats <- calculate_bbox_overlap(
+        xmin1 = single_group$xmin[i],
+        xmax1 = single_group$xmax[i],
+        ymin1 = single_group$ymin[i],
+        ymax1 = single_group$ymax[i],
+        xmin2 = single_group$xmin[j],
+        xmax2 = single_group$xmax[j],
+        ymin2 = single_group$ymin[j],
+        ymax2 = single_group$ymax[j]
+      )
+
+      southhills_overlap_results[[length(southhills_overlap_results) + 1]] <- data.frame(
+        spatial_tile_code = single_code,
+        file_a = single_group$filtered_base[i],
+        suffix_a = single_group$source_suffix[i],
+        file_b = single_group$filtered_base[j],
+        suffix_b = single_group$source_suffix[j],
+        xmin_a = single_group$xmin[i],
+        xmax_a = single_group$xmax[i],
+        ymin_a = single_group$ymin[i],
+        ymax_a = single_group$ymax[i],
+        xmin_b = single_group$xmin[j],
+        xmax_b = single_group$xmax[j],
+        ymin_b = single_group$ymin[j],
+        ymax_b = single_group$ymax[j],
+        area_a = overlap_stats$area1,
+        area_b = overlap_stats$area2,
+        overlap_area = overlap_stats$overlap_area,
+        overlap_proportion_smaller = overlap_stats$overlap_proportion_smaller,
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+}
+
+southhills_overlap_results_table <- do.call(rbind, southhills_overlap_results)
+
+# Sort so strongest overlaps appear first
+southhills_overlap_results_table <- southhills_overlap_results_table[
+  order(-southhills_overlap_results_table$overlap_proportion_smaller,
+        southhills_overlap_results_table$spatial_tile_code),
+]
+
+head(southhills_overlap_results_table, 20)
+
+# Save overlap comparison results #####
+
+write.csv(
+  southhills_overlap_results_table,
+  file.path(southhills_log_directory, "SouthHills_repeated_group_overlap_comparison.csv"),
+  row.names = FALSE
+)
+
+# Build list of remaining files with non-repeated spatial tile codes #####
+
+southhills_remaining_unique_paths <- southhills_remaining_inventory$filtered_path[
+  southhills_remaining_inventory$spatial_tile_count == 1
+]
+
+cat("Remaining files with non-repeated spatial tile code:",
+    length(southhills_remaining_unique_paths), "\n")
+
+# We have 364 tiles that are not overlapped out of our missing 522 tiles. 158 of these more inspection
+
+# Check overlap results table size
+
+nrow(southhills_overlap_results_table)
+head(southhills_overlap_results_table[, c(
+  "spatial_tile_code",
+  "file_a",
+  "file_b",
+  "overlap_proportion_smaller"
+)], 20)
+
+# Helper: serial CSF run for supplied file list #####
+## GOAL:
+## Run one file at a time, write a log entry for each file,
+## and avoid catalog_apply() while debugging South Hills.
+
+run_csf_serial <- function(filtered_tile_paths, ground_directory_path, csf_algorithm_object, log_path) {
+
+  for (single_tile_path in filtered_tile_paths) {
+
+    single_tile_stem <- tools::file_path_sans_ext(basename(single_tile_path))
+
+    single_output_path <- file.path(
+      ground_directory_path,
+      paste0(single_tile_stem, "_csf.las")
+    )
+
+    # Skip if output already exists and has a readable header
+    if (file.exists(single_output_path)) {
+      single_existing_header <- try(lidR::readLASheader(single_output_path), silent = TRUE)
+
+      if (!inherits(single_existing_header, "try-error")) {
+        cat(
+          format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+          " - SKIP already complete: ",
+          single_tile_path, "\n",
+          sep = "",
+          file = log_path,
+          append = TRUE
+        )
+        next
+      }
+    }
+
+    cat(
+      format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+      " - START: ",
+      single_tile_path, "\n",
+      sep = "",
+      file = log_path,
+      append = TRUE
+    )
+
+    tryCatch({
+
+      single_las <- lidR::readLAS(single_tile_path)
+
+      if (is.null(single_las) || lidR::is.empty(single_las)) {
+        cat(
+          format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+          " - EMPTY: ",
+          single_tile_path, "\n",
+          sep = "",
+          file = log_path,
+          append = TRUE
+        )
+        next
+      }
+
+      single_elapsed_time <- system.time({
+        single_las <- lidR::classify_ground(single_las, csf_algorithm_object)
+      })
+
+      lidR::writeLAS(single_las, single_output_path)
+
+      cat(
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        " - DONE: ",
+        single_tile_path,
+        " --- elapsed_seconds=",
+        round(single_elapsed_time["elapsed"], 2),
+        "\n",
+        sep = "",
+        file = log_path,
+        append = TRUE
+      )
+
+    }, error = function(e) {
+
+      cat(
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        " - ERROR: ",
+        single_tile_path,
+        " --- ",
+        conditionMessage(e), "\n",
+        sep = "",
+        file = log_path,
+        append = TRUE
+      )
+    })
+  }
+}
+
+summary(
+  southhills_remaining_inventory$npoints_header[
+    southhills_remaining_inventory$spatial_tile_count == 1
+  ]
+)
+
+# Run CRS on on non-repeated remaining South Hills files only #####
+
+southhills_unique_serial_log_path <- file.path(
+  southhills_log_directory,
+  "SouthHills_unique_remaining_csf_serial_log.txt"
+)
+
+run_csf_serial(
+  filtered_tile_paths   = southhills_remaining_unique_paths,
+  ground_directory_path = southhills_ground_output_directory,
+  csf_algorithm_object  = csf_ground_fullArea,
+  log_path              = southhills_unique_serial_log_path
+)
+
+length(list.files(
+  southhills_ground_output_directory,
+  pattern = "\\.(las|laz)$",
+  ignore.case = TRUE
+))
+
+tail(readLines(southhills_unique_serial_log_path, warn = FALSE), 20)
+
+##### 11) Sanity checks after the main run #####
+
+cat("\n--- FINAL OUTPUT COUNTS ---\n")
+cat("South Hills CSF outputs:",
+    length(list.files(southhills_ground_output_directory, pattern = "\\.(las|laz)$", ignore.case = TRUE)), "\n")
+cat("Albion CSF outputs     :",
+    length(list.files(albion_ground_output_directory, pattern = "\\.(las|laz)$", ignore.case = TRUE)), "\n")
+
+# Confirm one South Hills output has ground-class points
+southhills_output_files <- list.files(
+  southhills_ground_output_directory,
   pattern = "\\.(las|laz)$",
   full.names = TRUE,
   ignore.case = TRUE
@@ -6972,6 +8282,119 @@ print(
   ]
 )
 
+##### Define Serial CSF Helper Function #####
+# Classify one filtered LAS/LAZ tile at a time and write the CSF output.
+#
+# WHY WE USE THIS HERE:
+# These South Hills tiles are the exact subset that caused issues in the catalog-based workflow, so we process them one-by-one to avoid those overlap/catalog problems.
+#
+# WHAT THIS FUNCTION DOES:
+# 1. Loops through each filtered tile path
+# 2. Skips tiles that already have a valid CSF output
+# 3. Reads the tile
+# 4. Runs CSF ground classification
+# 5. Writes the classified output to 02_ground_csf
+# 6. Logs START / DONE / SKIP / ERROR messages to a text log
+
+run_csf_serial <- function(filtered_tile_paths,
+                           ground_directory_path,
+                           csf_algorithm_object,
+                           log_path) {
+
+  for (single_tile_path in filtered_tile_paths) {
+
+    single_tile_stem <- tools::file_path_sans_ext(basename(single_tile_path))
+
+    single_output_path <- file.path(
+      ground_directory_path,
+      paste0(single_tile_stem, "_csf.las")
+    )
+
+    # Skip tiles that already have a readable CSF output
+    if (file.exists(single_output_path)) {
+
+      single_existing_header <- try(
+        lidR::readLASheader(single_output_path),
+        silent = TRUE
+      )
+
+      if (!inherits(single_existing_header, "try-error")) {
+        cat(
+          format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+          " - SKIP already complete: ",
+          single_tile_path,
+          "\n",
+          sep = "",
+          file = log_path,
+          append = TRUE
+        )
+        next
+      }
+    }
+
+    # Log start of processing
+    cat(
+      format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+      " - START: ",
+      single_tile_path,
+      "\n",
+      sep = "",
+      file = log_path,
+      append = TRUE
+    )
+
+    tryCatch({
+
+      single_las <- lidR::readLAS(single_tile_path)
+
+      if (is.null(single_las) || lidR::is.empty(single_las)) {
+        cat(
+          format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+          " - EMPTY: ",
+          single_tile_path,
+          "\n",
+          sep = "",
+          file = log_path,
+          append = TRUE
+        )
+        next
+      }
+
+      single_elapsed_time <- system.time({
+        single_las <- lidR::classify_ground(single_las, csf_algorithm_object)
+      })
+
+      lidR::writeLAS(single_las, single_output_path)
+
+      cat(
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        " - DONE: ",
+        single_tile_path,
+        " --- elapsed_seconds=",
+        round(single_elapsed_time["elapsed"], 2),
+        "\n",
+        sep = "",
+        file = log_path,
+        append = TRUE
+      )
+
+    }, error = function(e) {
+
+      cat(
+        format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        " - ERROR: ",
+        single_tile_path,
+        " --- ",
+        conditionMessage(e),
+        "\n",
+        sep = "",
+        file = log_path,
+        append = TRUE
+      )
+    })
+  }
+}
+
 ##### Run Serial CSF On Corrected Final Buggy Keep List #####
 
 # Process only the final buggy South Hills tiles that still need CSF classification after all overlap / coverage / redundancy decisions.
@@ -7030,5 +8453,20 @@ if (length(southhills_output_files) > 0) {
     print(table(las_chk$Classification))
   }
 }
+
+if (length(southhills_output_files) > 0) {
+  one_out <- southhills_output_files[1]
+
+  if (!is.na(one_out) && file.exists(one_out)) {
+    las_chk <- lidR::readLAS(one_out)
+    print(table(las_chk$Classification))
+  }
+}
 ```
 
+
+Looks like everything ran! Next, I'll just verify that the tiles were saved to the folders and do a random QA check in CloudCompare.
+
+1. Showing in South Hills folder --> Yes, 765 tiles show up.
+
+2. Random CloudCompare check -->
