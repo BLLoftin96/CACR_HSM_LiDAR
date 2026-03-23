@@ -597,8 +597,6 @@ Height Threshold Typical Values:
 Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
 
 ```{r Generate Ground Classification Pipeline - Center Boundary Box 500m}
-
-
 ############# Set up Tiles (Do NOT run if you are running the previous chunk above and it is loaded into the environment) #############
 
 # I had to close R so I need to find the filtered 500m centered ROI clips (so I do not need to re-run the filter)
@@ -904,6 +902,541 @@ terra::terraOptions(tempdir = terra_temp_directory)
 stopifnot(dir.exists(terra_temp_directory))
 stopifnot(file.access(terra_temp_directory, 2) == 0)
 
+```
+
+## Ground Classification
+
+Working in mountainous forests, we will need to keep track of the parameters that we use. It is standard to use a cloth simulation filter which is available through the LiDAR function csf(). With the csf function, the LiDAR point cloud is inverted, and a simulation of a “rigid cloth” is draped over the inverted point cloud. The simulated cloth surface is then used to determine which points are associated with the ground.
+
+CSF is controlled by:
+
+-   how stiff the 'cloth' is --\> rigidity
+
+-   how coarse the 'cloth' mesh is --\> cloth resolution
+
+-   much much sagging is allowed --\> slope smoothing
+
+Cloth Resolution typical values:
+
+-   0.5 - 0.75 m = very fine cloth (captures small terrain detail)
+
+-   1 m = medium cloth (balanced)
+
+-   2–3 m = coarse cloth (very smooth terrain)
+
+For our data set we have moderate-to-high density, so we could try 0.5m if 1m isn't working well. The smaller values (0.5m) typically is recommended for dense canopy, complex terrain, and reduces over-smoothing. However, it can eat a lot of RAM and run much slower.
+
+Rigidness typical values:
+
+-   1 = flexible cloth (follows small bumps)
+-   2 = balanced (good starting point)
+-   3 = very stiff (smooth terrain)
+
+Class Threshold typical values:
+
+-   0.3 = stricter ground and may miss true ground under canopy
+-   0.5 = good starting point and mid-range
+-   0.7 - 1 = risk classifying low vegetation as ground
+
+We will also be trying the PMF (progressive morphological filter) which creates a small window and finds the low points where it then gradually increases the window size and allow higher thresholds as terrain scale increases.Then, we will compare the two. I expect that the CSF may perform better compared to the PMF due to the mountainous terrain.
+
+PMF is controlled by:
+
+-   window size(s) (scale of terrain features)
+
+-   height threshold (how much deviation from the ground is allowed)
+
+**Here we will begin with starting with the default then check the DTM and tune from there. Since we are classifying these ourselves, we should be on the lookout for DTM pits, sinks, or 'wavy' terrain**
+
+Window Size Typical Values:
+
+-   3-5 = small to detect micro-terrain but may misclassify roots/rocks
+-   5-10 = balanced (good default)
+-   10+ = large for very smooth but can miss real terrain detail
+
+Height Threshold Typical Values:
+
+-   0.5-1.0 = flat terrain
+-   1.0-2.0 = forested terrain
+-   1.5-3.0 = steep/mountainous
+
+Once points are classified, you know which points are associated with the ground, but because points are not continuous on the ground, you still need to interpolate between them to get an elevation map. For this, you can use a Delaunay triangulation which interpolates a continuous surface as a triangulation between the points classified as ground. You can implement the triangulation using the rasterize_terrain() function in the lidR package with the tin() algorithm selected.
+
+CSF with the current parameters in the algorithm appear to be the best for our data. We can now the classification to make a DEM and a normalized canopy height model.
+
+```{r Classify - Pipeline}
+#### Build CRS - Clean ROI Catalogs      ####
+
+# These catalogs point to the already-filtered ROI clips on disk.
+# They do NOT create any new files by themselves.
+
+ctg_roi_filtered_utm11 <- lidR::readLAScatalog(roi_filtered_clip_paths_utm11)
+ctg_roi_filtered_utm12 <- lidR::readLAScatalog(roi_filtered_clip_paths_utm12)
+
+# Process by file: chunk_size=0 means each file is processed independently
+lidR::opt_chunk_size(ctg_roi_filtered_utm11) <- 0
+lidR::opt_chunk_buffer(ctg_roi_filtered_utm11) <- 0
+
+lidR::opt_chunk_size(ctg_roi_filtered_utm12) <- 0
+lidR::opt_chunk_buffer(ctg_roi_filtered_utm12) <- 0
+
+lidR::set_lidr_threads(1)
+
+# Optional: print summaries for QA
+ctg_roi_filtered_utm11
+ctg_roi_filtered_utm12
+
+#### CSF Ground Classification (BOTH) ####
+
+# This step creates NEW files on disk:
+# - Output_Files/Filter_Chunks/ground_csf_utm11/*_csf.laz
+# - Output_Files/Filter_Chunks/ground_csf_utm12/*_csf.laz
+
+csf_algorithm_object <- lidR::csf(
+  sloop_smooth = TRUE,
+  class_threshold = 0.5,
+  cloth_resolution = 0.5,
+  rigidness = 2
+)
+
+# CSF RUN: UTM 11
+
+lidR::opt_output_files(ctg_roi_filtered_utm11) <- file.path(
+  utm11_dirs$ground_csf,
+  "{ORIGINALFILENAME}_csf.laz"
+)
+
+lidR::catalog_apply(ctg_roi_filtered_utm11, function(cluster) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  las_object <- lidR::classify_ground(las_object, csf_algorithm_object)
+
+  las_object
+})
+
+# CSF RUN: UTM 12
+
+lidR::opt_output_files(ctg_roi_filtered_utm12) <- file.path(
+  utm12_dirs$ground_csf,
+  "{ORIGINALFILENAME}_csf.laz"
+)
+
+lidR::catalog_apply(ctg_roi_filtered_utm12, function(cluster) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  las_object <- lidR::classify_ground(las_object, csf_algorithm_object)
+
+  las_object
+})
+
+
+########## FIX: DO NOT INCLUDE .las/.laz EXTENSION ##########
+
+lidR::opt_output_files(ctg_roi_filtered_utm11) <- file.path(
+  utm11_dirs$ground_csf,
+  "{ORIGINALFILENAME}_csf"
+)
+
+lidR::opt_output_files(ctg_roi_filtered_utm12) <- file.path(
+  utm12_dirs$ground_csf,
+  "{ORIGINALFILENAME}_csf"
+)
+
+########## FIX: MATCH ANY LAS/LAZ EXTENSION ##########
+
+csf_output_paths_utm11 <- list.files(
+  utm11_dirs$ground_csf,
+  pattern = "_csf\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+csf_output_paths_utm12 <- list.files(
+  utm12_dirs$ground_csf,
+  pattern = "_csf\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+# If your accidental files are still ".laz.las", match them too:
+if (length(csf_output_paths_utm11) == 0) {
+  csf_output_paths_utm11 <- list.files(
+    utm11_dirs$ground_csf,
+    pattern = "_csf\\.laz\\.las$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+}
+
+if (length(csf_output_paths_utm12) == 0) {
+  csf_output_paths_utm12 <- list.files(
+    utm12_dirs$ground_csf,
+    pattern = "_csf\\.laz\\.las$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+}
+
+stopifnot(length(csf_output_paths_utm11) > 0)
+stopifnot(length(csf_output_paths_utm12) > 0)
+
+########## CLEANUP: RENAME *.laz.las -> *.las ##########
+
+rename_laz_las_double_extension <- function(folder_path) {
+
+  double_extension_file_paths <- list.files(
+    folder_path,
+    pattern = "\\.laz\\.las$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  if (length(double_extension_file_paths) == 0) return(invisible(NULL))
+
+  for (old_path in double_extension_file_paths) {
+
+    new_path <- sub("\\.laz\\.las$", ".las", old_path, ignore.case = TRUE)
+
+    # Do not overwrite anything accidentally
+    if (file.exists(new_path)) next
+
+    file.rename(from = old_path, to = new_path)
+  }
+}
+
+rename_laz_las_double_extension(utm11_dirs$ground_csf)
+rename_laz_las_double_extension(utm12_dirs$ground_csf)
+
+csf_output_paths_utm11 <- list.files(utm11_dirs$ground_csf, pattern = "_csf\\.(las|laz)$", full.names = TRUE, ignore.case = TRUE)
+csf_output_paths_utm12 <- list.files(utm12_dirs$ground_csf, pattern = "_csf\\.(las|laz)$", full.names = TRUE, ignore.case = TRUE)
+
+# Check 
+list.files(utm11_dirs$ground_csf)
+
+#### Build Catalogs from CSF        ####
+
+
+csf_output_paths_utm11 <- list.files(
+  utm11_dirs$ground_csf,
+  pattern = "_csf\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+csf_output_paths_utm12 <- list.files(
+  utm12_dirs$ground_csf,
+  pattern = "_csf\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+stopifnot(length(csf_output_paths_utm11) > 0)
+stopifnot(length(csf_output_paths_utm12) > 0)
+
+ctg_csf_utm11 <- lidR::readLAScatalog(csf_output_paths_utm11)
+ctg_csf_utm12 <- lidR::readLAScatalog(csf_output_paths_utm12)
+
+lidR::opt_chunk_size(ctg_csf_utm11) <- 0
+lidR::opt_chunk_buffer(ctg_csf_utm11) <- 0
+
+lidR::opt_chunk_size(ctg_csf_utm12) <- 0
+lidR::opt_chunk_buffer(ctg_csf_utm12) <- 0
+
+lidR::set_lidr_threads(1)
+```
+
+## Generate DEM, Slope, and Aspect
+
+Now that our point cloud has had the ground classified. We can create a Digital Elevation Model by interpolating the points which will help us as we make the normalized canopy height model.
+
+\*\* Note when making HSM it will likely be better to aggregate up to 5m or 10m for rasters. \*\*
+
+```{r DEM, Slope, Aspect - Pipeline}
+#### DTM (1m) for UTM11 and UTM12      ####
+# Outputs:
+# - Output_Files/Filter_Chunks/dtm_res1m_utm11/*_dtm.tif
+# - Output_Files/Filter_Chunks/dtm_res1m_utm12/*_dtm.tif
+
+dtm_fun <- function(cluster, ...) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  # Skip if there are no ground points
+  if (!any(las_object@data$Classification == 2L)) return(NULL)
+
+  dtm_raster <- lidR::rasterize_terrain(
+    las_object,
+    res = 1,
+    algorithm = lidR::tin()
+  )
+
+  return(dtm_raster)
+}
+
+# DTM: UTM11
+
+lidR::opt_output_files(ctg_csf_utm11) <- file.path(
+  utm11_dirs$dtm_res1m,
+  "{ORIGINALFILENAME}_dtm"
+)
+
+lidR::catalog_apply(ctg_csf_utm11, dtm_fun)
+
+# DTM: UTM12
+
+lidR::opt_output_files(ctg_csf_utm12) <- file.path(
+  utm12_dirs$dtm_res1m,
+  "{ORIGINALFILENAME}_dtm"
+)
+
+lidR::catalog_apply(ctg_csf_utm12, dtm_fun)
+
+#### Slope + Aspect from DTM (BOTH)    ####
+
+# Outputs:
+# - slope_res1m_utm11/*_slope.tif
+# - aspect_res1m_utm11/*_aspect.tif
+# - slope_res1m_utm12/*_slope.tif
+# - aspect_res1m_utm12/*_aspect.tif
+
+dtm_paths_utm11 <- list.files(
+  utm11_dirs$dtm_res1m,
+  pattern = "_dtm\\.(tif|grd)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+dtm_paths_utm12 <- list.files(
+  utm12_dirs$dtm_res1m,
+  pattern = "_dtm\\.(tif|grd)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+stopifnot(length(dtm_paths_utm11) > 0)
+stopifnot(length(dtm_paths_utm12) > 0)
+
+# SLOPE/ASPECT: UTM11
+
+for (single_dtm_path in dtm_paths_utm11) {
+
+  dtm_rast <- terra::rast(single_dtm_path)
+
+  slope_rast  <- terra::terrain(dtm_rast, v = "slope", unit = "degrees")
+  aspect_rast <- terra::terrain(dtm_rast, v = "aspect", unit = "degrees")
+
+  base_name <- tools::file_path_sans_ext(basename(single_dtm_path))
+
+  terra::writeRaster(
+    slope_rast,
+    filename = file.path(utm11_dirs$slope_res1m, paste0(base_name, "_slope.tif")),
+    overwrite = TRUE
+  )
+
+  terra::writeRaster(
+    aspect_rast,
+    filename = file.path(utm11_dirs$aspect_res1m, paste0(base_name, "_aspect.tif")),
+    overwrite = TRUE
+  )
+}
+
+# SLOPE/ASPECT: UTM12
+
+for (single_dtm_path in dtm_paths_utm12) {
+
+  dtm_rast <- terra::rast(single_dtm_path)
+
+  slope_rast  <- terra::terrain(dtm_rast, v = "slope", unit = "degrees")
+  aspect_rast <- terra::terrain(dtm_rast, v = "aspect", unit = "degrees")
+
+  base_name <- tools::file_path_sans_ext(basename(single_dtm_path))
+
+  terra::writeRaster(
+    slope_rast,
+    filename = file.path(utm12_dirs$slope_res1m, paste0(base_name, "_slope.tif")),
+    overwrite = TRUE
+  )
+
+  terra::writeRaster(
+    aspect_rast,
+    filename = file.path(utm12_dirs$aspect_res1m, paste0(base_name, "_aspect.tif")),
+    overwrite = TRUE
+  )
+}
+
+```
+
+## Generate Normalized Canopy Height Model
+
+Now that the ground is classified and we have the dem, we can make the normalized point cloud heights (height above ground). We can then make the canopy height model from these points (canopy top height per pixel)
+
+```{r Normalized Heights and Canopy Height Model - Pipeline}
+#### Normalize Height (BOTH)  ####
+
+# Outputs:
+# - norm_csf_utm11/*_norm.laz
+# - norm_csf_utm12/*_norm.laz
+
+norm_fun <- function(cluster, ...) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  if (!any(las_object@data$Classification == 2L)) return(NULL)
+
+  normalized_las_object <- lidR::normalize_height(las_object, lidR::tin())
+
+  return(normalized_las_object)
+}
+
+# NORMALIZE: UTM11
+
+lidR::opt_output_files(ctg_csf_utm11) <- file.path(
+  utm11_dirs$norm_csf,
+  "{ORIGINALFILENAME}_norm"
+)
+
+lidR::catalog_apply(ctg_csf_utm11, norm_fun)
+
+# NORMALIZE: UTM12
+
+lidR::opt_output_files(ctg_csf_utm12) <- file.path(
+  utm12_dirs$norm_csf,
+  "{ORIGINALFILENAME}_norm"
+)
+
+lidR::catalog_apply(ctg_csf_utm12, norm_fun)
+
+# Build Normalized Catalog (BOTH) 
+
+norm_paths_utm11 <- list.files(
+  utm11_dirs$norm_csf,
+  pattern = "_norm\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+norm_paths_utm12 <- list.files(
+  utm12_dirs$norm_csf,
+  pattern = "_norm\\.(las|laz)$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+stopifnot(length(norm_paths_utm11) > 0)
+stopifnot(length(norm_paths_utm12) > 0)
+
+ctg_norm_utm11 <- lidR::readLAScatalog(norm_paths_utm11)
+ctg_norm_utm12 <- lidR::readLAScatalog(norm_paths_utm12)
+
+lidR::opt_chunk_size(ctg_norm_utm11) <- 0
+lidR::opt_chunk_buffer(ctg_norm_utm11) <- 0
+
+lidR::opt_chunk_size(ctg_norm_utm12) <- 0
+lidR::opt_chunk_buffer(ctg_norm_utm12) <- 0
+
+lidR::set_lidr_threads(1)
+
+# Also keep explicit vectors for the per-file vertical bin loop below
+utm11_norm_files_for_loop <- norm_paths_utm11
+utm12_norm_files_for_loop <- norm_paths_utm12
+
+#### CHM (1m) (BOTH)   ####
+
+# Outputs:
+# - chm_res1m_utm11/*_chm.tif
+# - chm_res1m_utm12/*_chm.tif
+
+chm_fun <- function(cluster, ...) {
+
+  las_object <- lidR::readLAS(cluster)
+  if (lidR::is.empty(las_object)) return(NULL)
+
+  chm_raster <- lidR::rasterize_canopy(
+    las_object,
+    res = 1,
+    algorithm = lidR::pitfree(c(0,2,5,10,15,20,25), subcircle = 0.2)
+  )
+
+  return(chm_raster)
+}
+
+# CHM: UTM11
+
+lidR::opt_output_files(ctg_norm_utm11) <- file.path(
+  utm11_dirs$chm_res1m,
+  "{ORIGINALFILENAME}_chm"
+)
+
+lidR::catalog_apply(ctg_norm_utm11, chm_fun)
+
+# CHM: UTM12 
+
+lidR::opt_output_files(ctg_norm_utm12) <- file.path(
+  utm12_dirs$chm_res1m,
+  "{ORIGINALFILENAME}_chm"
+)
+
+lidR::catalog_apply(ctg_norm_utm12, chm_fun)
+
+#### QA with Focal Smoothing Median ####
+
+# Most of the study area looked great but there are a few areas where hillshade is really high or terrain is very steep that appear to be being read as part of the canopy height. Lets try this to see if this reduces that noise. This is for a comparison to the original CHM. Typically we would reclassify but given how well everything else looks and my deadline changing this option may be best reserved for a last option.
+
+# - This helps suppress isolated spiky pixels / local artifacts
+# - This does NOT change the raw CHM
+# - This does NOT change cover or any Step 10 bin metrics
+#
+# OUTPUTS:
+# - chm_res1m_utm11/*_chm_fmed3.tif
+# - chm_res1m_utm12/*_chm_fmed3.tif
+
+compute_chm_focal_median_from_folder <- function(chm_folder) {
+
+  chm_paths <- list.files(
+    chm_folder,
+    pattern = "_chm\\.(tif|grd)$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  stopifnot(length(chm_paths) > 0)
+
+  focal_window_matrix_3x3 <- matrix(1, nrow = 3, ncol = 3)
+
+  for (single_chm_path in chm_paths) {
+
+    chm_rast <- terra::rast(single_chm_path)
+
+    chm_fmed3_rast <- terra::focal(
+      chm_rast,
+      w = focal_window_matrix_3x3,
+      fun = median,
+      na.policy = "omit",
+      fillvalue = NA
+    )
+
+    base_name <- tools::file_path_sans_ext(basename(single_chm_path))
+
+    safe_write(
+      chm_fmed3_rast,
+      file.path(chm_folder, paste0(base_name, "_fmed3.tif"))
+    )
+  }
+
+  invisible(NULL)
+}
+
+# Focal smooth CHM UTM 11
+compute_chm_focal_median_from_folder(utm11_dirs$chm_res1m)
+
+# Focal smooth CHM UTM 12
+compute_chm_focal_median_from_folder(utm12_dirs$chm_res1m)
 ```
 
 ## Forest Metrics
@@ -1668,6 +2201,1189 @@ cat("\nUTM12 subfolders:\n")
 print(utm12_dirs)
 ```
 
+## QA Forest Metrics
+
+With the forest metrics done, we can perform some QA. This will be done in R and QGIS. The order am doing this is:
+
+1.  Run the R QA script
+
+2.  Review the CSVs for flagged files
+
+    -   Check if any metric groups with n_read_fail\>0
+
+    -   Any cover, gap fraction, or bin percent with n_flag_has_gt_1\>0
+
+    -   Any presence raster with n_flag_non_binary_values \>0
+
+    -   Any rumple raster with `n_flag_rumple_lt_1 > 0`
+
+    -   Any group with `flag_mixed_resolution = TRUE`
+
+    -   Any group with `flag_mixed_crs = TRUE`
+
+    -   Any files with very high `prop_na`
+
+    -   Any files where `flag_all_zero = TRUE` unexpectedly
+
+        -   metric_raster_flags_ALL.csv
+
+        -   metric_raster_geometry_ALL.csv
+
+        -   metric_raster_summary_ALL.csv
+
+3.  Cross-metric consistency checks
+
+    Some rasters should relate to each other in predictable ways:
+
+    -   gap fraction = 1 - cover
+
+        -   high cover corresponds to lower gap fraction
+
+    -   cells with high 10+m density should have taller CHM
+
+    -   high FHD often occurs where vegetation is spread across several bins
+
+    -   rumple and rugosity often increase together (though not identical)
+
+4.  Check distributions
+
+    Inspect histograms or density plots for each metric looking for:
+
+    -   very skewed variables
+
+    -   metrics dominated by zeros
+
+    -   impossible spikes
+
+    -   weird bimodality caused by processing artifacts
+
+    -   near-duplicate variables
+
+5.  Visually inspect a stratified set of tiles in QGIS by checking across major habitats
+
+    -   closed conifer forest
+
+    -   open forest
+
+    -   shrub/regneration
+
+    -   burn area
+
+    -   meadow/rock/road
+
+    -   steep terrain
+
+    -   overlap zone/former problem tiles –\> more for full pipeline since there are none here
+
+6.  Compare CHM to field height data
+
+    Using field data we can make comparisons between CHM and the field measured heights in QGIS. They likely won't be exact given that field measurements were generally estimates.
+
+7.  Compare cover/bin behavior to field observations and habitat descriptions
+
+    Field measurements do not have to be exact but we can use what we have as a comparisons or at least see if the raster matches the description.
+
+    -   site noted as dense understory tend to have higher 0-2m or 2-5m density
+
+    -   more open stands should have lower cover and higher gap fraction
+
+    -   mature stands tend to have stronger/higher 10+m metrics
+
+    -   more structurally layered stands tend to have higher FHD
+
+8.  Check predictor redundancy before modeling
+
+    If predictors are too redundant, interpretation gets messy and some models become unstable. Likely examples:
+
+    -   cover and gap fraction are direct inverses
+
+    -   CHM and 10+ m structure may be strongly related
+
+    -   Rugosity, rumple, complexity, and FHD may overlap somewhat
+
+Some important considerations for the Pipeline QA. We are working with a small subset of our tiles, so somethings in this code are likely to not be as informative as it would be in the full tile set. The code will still work as it is written to process tile-by-tile or metric-group-by-metric-group. This does change the interpretation of the outputs.
+
+***What will still work fine***
+
+-   file discovery with list.files()
+
+-   raster summaries
+
+-   min / max / mean / sd calculations
+
+-   geometry checks
+
+-   histogram creation
+
+-   tile-level cross-metric checks
+
+-   flag tables
+
+***What becomes weaker with only 8 tiles and should interpret more cautiously***
+
+-   distribution summaries across a metric group
+
+-   histogram shapes
+
+-   how “representative” a skewed or zero-inflated metric looks
+
+-   cross-tile generalization
+
+### R QA of Forest Metrics
+
+In R we can perform things like: - scans all metric rasters - reports min/max/mean/NA counts - flags impossible values - creates a table to review
+
+```{r Forest Metrics QA - Pipeline}
+##### Define QA Output Folder #####
+# Create one folder to hold all QA outputs from this add-on block
+
+metrics_qa_root_dir <- file.path(output_root_directory, "metrics_QA")
+dir.create(metrics_qa_root_dir, showWarnings = FALSE, recursive = TRUE)
+
+stopifnot(dir.exists(metrics_qa_root_dir))
+
+##### Define QA Subset Label #####
+# Make it explicit that these summaries are for a representative QA subset, not yet the full study area
+
+qa_subset_label <- "representative_subset_8tiles"
+
+##### Define Helper To Align Two Rasters Safely #####
+# Make raster B match raster A so cell-by-cell comparisons are possible and if geometry already matches, raster B is returned unchanged
+
+align_raster_b_to_a <- function(raster_a, raster_b) {
+
+  if (!terra::compareGeom(raster_a, raster_b, stopOnError = FALSE)) {
+    raster_b <- terra::resample(raster_b, raster_a, method = "near")
+  }
+
+  raster_b
+}
+
+##### Define Helper To Extract Short Spatial Tile Code #####
+# Pull the unique short tile code from any metric filename
+# - Example: USGS_LPC_ID_SouthernID_2018_D19_11TQG230725_chm.tif -> 11TQG230725
+
+extract_short_tile_code <- function(single_file_path) {
+
+  single_file_stem <- toupper(tools::file_path_sans_ext(basename(single_file_path)))
+
+  matched_pattern <- regexpr(
+    "(?<![A-Z0-9])\\d{2}[A-Z]{3}\\d{6}(?![A-Z0-9])",
+    single_file_stem,
+    perl = TRUE
+  )
+
+  if (matched_pattern[1] != -1) {
+    return(regmatches(single_file_stem, matched_pattern)[1])
+  }
+
+  NA_character_
+}
+
+##### Define Helper To Compute Safe Cellwise Correlation #####
+# - Compute Pearson correlation using only finite paired values, return both the correlation and the number of paired cells used, & warn when too few cells support the estimate
+
+compute_safe_cellwise_correlation <- function(values_a,
+                                              values_b,
+                                              min_pairs_required = 25,
+                                              warning_label = "unnamed_comparison") {
+
+  keep_index <- which(is.finite(values_a) & is.finite(values_b))
+  n_pairs_used <- length(keep_index)
+
+  if (n_pairs_used == 0) {
+    message("No overlapping finite cells for: ", warning_label)
+    return(list(
+      correlation_value = NA_real_,
+      n_pairs_used = 0,
+      flag_too_few_pairs = TRUE
+    ))
+  }
+
+  if (n_pairs_used < min_pairs_required) {
+    warning(
+      "Only ",
+      n_pairs_used,
+      " paired cells available for ",
+      warning_label,
+      ". Correlation will be returned as NA."
+    )
+    return(list(
+      correlation_value = NA_real_,
+      n_pairs_used = n_pairs_used,
+      flag_too_few_pairs = TRUE
+    ))
+  }
+
+  list(
+    correlation_value = stats::cor(values_a[keep_index], values_b[keep_index], use = "complete.obs"),
+    n_pairs_used = n_pairs_used,
+    flag_too_few_pairs = FALSE
+  )
+}
+
+##### Define Helper To Compute Safe Mean Absolute Difference #####
+# Useful when one raster should mathematically equal another transformed raster and returns how many paired cells were used
+# - Example: gap fraction should equal 1 - cover
+
+compute_safe_mean_abs_difference <- function(values_a,
+                                             values_b,
+                                             min_pairs_required = 25,
+                                             warning_label = "unnamed_difference") {
+
+  keep_index <- which(is.finite(values_a) & is.finite(values_b))
+  n_pairs_used <- length(keep_index)
+
+  if (n_pairs_used == 0) {
+    message("No overlapping finite cells for: ", warning_label)
+    return(list(
+      mad_value = NA_real_,
+      n_pairs_used = 0,
+      flag_too_few_pairs = TRUE
+    ))
+  }
+
+  if (n_pairs_used < min_pairs_required) {
+    warning(
+      "Only ",
+      n_pairs_used,
+      " paired cells available for ",
+      warning_label,
+      ". Mean absolute difference may be unstable."
+    )
+  }
+
+  list(
+    mad_value = mean(abs(values_a[keep_index] - values_b[keep_index]), na.rm = TRUE),
+    n_pairs_used = n_pairs_used,
+    flag_too_few_pairs = n_pairs_used < min_pairs_required
+  )
+}
+
+##### Define Helper To Safely Get Metric Paths #####
+# Return metric file paths if the folder exists & return character(0) with a message if the folder does not exist
+
+safe_list_metric_files <- function(folder_path, pattern_text, metric_label) {
+
+  if (is.null(folder_path) || length(folder_path) == 0 || is.na(folder_path) || !dir.exists(folder_path)) {
+    message("Skipping metric group because folder is missing or invalid: ", metric_label)
+    return(character(0))
+  }
+
+  list.files(
+    folder_path,
+    pattern = pattern_text,
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+}
+
+##### Define Helper To Safely Build Common Tile IDs #####
+# Intersect only the non-empty ID sets and avoid hard-stop behavior when some metric groups are absent in a small QA subset
+
+safe_reduce_intersect <- function(id_list_named) {
+
+  non_empty_id_sets <- id_list_named[vapply(id_list_named, length, integer(1)) > 0]
+
+  if (length(non_empty_id_sets) == 0) {
+    return(character(0))
+  }
+
+  Reduce(intersect, non_empty_id_sets)
+}
+
+##### Define Cross Metric Consistency QA For One UTM Group #####
+# Check whether rasters that should relate to each other do in fact relate sensibly
+#
+# CHECKS INCLUDED:
+# - gap fraction ≈ 1 - cover
+# - cover vs gap fraction should be strongly negative
+# - 10+ m density vs CHM should usually be positive
+# - FHD should increase as vegetation occupies more bins
+# - rugosity vs rumple should usually be positive
+
+run_cross_metric_consistency_qa_for_one_group <- function(single_utm_dir_list,
+                                                          utm_group_name,
+                                                          qa_output_root_dir,
+                                                          subset_label = qa_subset_label,
+                                                          min_tiles_warning = 5,
+                                                          min_pairs_required = 25) {
+
+  # Gather Required Raster Paths
+
+  cover_paths <- safe_list_metric_files(
+    single_utm_dir_list$vertical_bins_5m$summary,
+    "_cover_5m\\.tif$",
+    paste0(utm_group_name, "_cover_5m")
+  )
+
+  gap_fraction_paths <- safe_list_metric_files(
+    single_utm_dir_list$gap_fraction_res5m,
+    "_gapfrac_5m\\.tif$",
+    paste0(utm_group_name, "_gap_fraction_res5m")
+  )
+
+  vegcount_paths <- safe_list_metric_files(
+    single_utm_dir_list$vertical_bins_5m$summary,
+    "_vegcount_5m\\.tif$",
+    paste0(utm_group_name, "_vegcount_5m")
+  )
+
+  fhd_paths <- safe_list_metric_files(
+    single_utm_dir_list$fhd_res5m,
+    "_fhd_5m\\.tif$",
+    paste0(utm_group_name, "_fhd_res5m")
+  )
+
+  rugosity_paths <- safe_list_metric_files(
+    single_utm_dir_list$rugosity_res5m,
+    "_rugosity.*\\.tif$",
+    paste0(utm_group_name, "_rugosity_res5m")
+  )
+
+  rumple_paths <- safe_list_metric_files(
+    single_utm_dir_list$rumple_res5m,
+    "_rumple_5m\\.tif$",
+    paste0(utm_group_name, "_rumple_res5m")
+  )
+
+  bin_10plus_density_paths <- safe_list_metric_files(
+    single_utm_dir_list$vertical_bins_5m$bin_10mplus,
+    "_dens_5m\\.tif$",
+    paste0(utm_group_name, "_bin_10plus_density")
+  )
+
+  chm_paths <- safe_list_metric_files(
+    single_utm_dir_list$chm_res1m,
+    "_chm\\.tif$",
+    paste0(utm_group_name, "_chm_res1m")
+  )
+
+  bin_0to2_pct_paths <- safe_list_metric_files(
+    single_utm_dir_list$vertical_bins_5m$bin_0to2m,
+    "_pct_5m\\.tif$",
+    paste0(utm_group_name, "_bin_0to2_pct")
+  )
+
+  bin_2to5_pct_paths <- safe_list_metric_files(
+    single_utm_dir_list$vertical_bins_5m$bin_2to5m,
+    "_pct_5m\\.tif$",
+    paste0(utm_group_name, "_bin_2to5_pct")
+  )
+
+  bin_5to10_pct_paths <- safe_list_metric_files(
+    single_utm_dir_list$vertical_bins_5m$bin_5to10m,
+    "_pct_5m\\.tif$",
+    paste0(utm_group_name, "_bin_5to10_pct")
+  )
+
+  bin_10plus_pct_paths <- safe_list_metric_files(
+    single_utm_dir_list$vertical_bins_5m$bin_10mplus,
+    "_pct_5m\\.tif$",
+    paste0(utm_group_name, "_bin_10plus_pct")
+  )
+
+  # Build Tile ID Maps Using Short Spatial Tile Code
+
+  cover_ids <- if (length(cover_paths) > 0) vapply(cover_paths, extract_short_tile_code, character(1)) else character(0)
+  gap_ids <- if (length(gap_fraction_paths) > 0) vapply(gap_fraction_paths, extract_short_tile_code, character(1)) else character(0)
+  vegcount_ids <- if (length(vegcount_paths) > 0) vapply(vegcount_paths, extract_short_tile_code, character(1)) else character(0)
+  fhd_ids <- if (length(fhd_paths) > 0) vapply(fhd_paths, extract_short_tile_code, character(1)) else character(0)
+  rugosity_ids <- if (length(rugosity_paths) > 0) vapply(rugosity_paths, extract_short_tile_code, character(1)) else character(0)
+  rumple_ids <- if (length(rumple_paths) > 0) vapply(rumple_paths, extract_short_tile_code, character(1)) else character(0)
+  bin_10plus_density_ids <- if (length(bin_10plus_density_paths) > 0) vapply(bin_10plus_density_paths, extract_short_tile_code, character(1)) else character(0)
+  chm_ids <- if (length(chm_paths) > 0) vapply(chm_paths, extract_short_tile_code, character(1)) else character(0)
+  bin_0to2_pct_ids <- if (length(bin_0to2_pct_paths) > 0) vapply(bin_0to2_pct_paths, extract_short_tile_code, character(1)) else character(0)
+  bin_2to5_pct_ids <- if (length(bin_2to5_pct_paths) > 0) vapply(bin_2to5_pct_paths, extract_short_tile_code, character(1)) else character(0)
+  bin_5to10_pct_ids <- if (length(bin_5to10_pct_paths) > 0) vapply(bin_5to10_pct_paths, extract_short_tile_code, character(1)) else character(0)
+  bin_10plus_pct_ids <- if (length(bin_10plus_pct_paths) > 0) vapply(bin_10plus_pct_paths, extract_short_tile_code, character(1)) else character(0)
+
+  # Drop Any Paths That Failed Tile-Code Extraction
+
+  cover_keep <- !is.na(cover_ids)
+  gap_keep <- !is.na(gap_ids)
+  vegcount_keep <- !is.na(vegcount_ids)
+  fhd_keep <- !is.na(fhd_ids)
+  rugosity_keep <- !is.na(rugosity_ids)
+  rumple_keep <- !is.na(rumple_ids)
+  bin_10plus_density_keep <- !is.na(bin_10plus_density_ids)
+  chm_keep <- !is.na(chm_ids)
+  bin_0to2_pct_keep <- !is.na(bin_0to2_pct_ids)
+  bin_2to5_pct_keep <- !is.na(bin_2to5_pct_ids)
+  bin_5to10_pct_keep <- !is.na(bin_5to10_pct_ids)
+  bin_10plus_pct_keep <- !is.na(bin_10plus_pct_ids)
+
+  cover_paths <- cover_paths[cover_keep]
+  gap_fraction_paths <- gap_fraction_paths[gap_keep]
+  vegcount_paths <- vegcount_paths[vegcount_keep]
+  fhd_paths <- fhd_paths[fhd_keep]
+  rugosity_paths <- rugosity_paths[rugosity_keep]
+  rumple_paths <- rumple_paths[rumple_keep]
+  bin_10plus_density_paths <- bin_10plus_density_paths[bin_10plus_density_keep]
+  chm_paths <- chm_paths[chm_keep]
+  bin_0to2_pct_paths <- bin_0to2_pct_paths[bin_0to2_pct_keep]
+  bin_2to5_pct_paths <- bin_2to5_pct_paths[bin_2to5_pct_keep]
+  bin_5to10_pct_paths <- bin_5to10_pct_paths[bin_5to10_pct_keep]
+  bin_10plus_pct_paths <- bin_10plus_pct_paths[bin_10plus_pct_keep]
+
+  cover_ids <- cover_ids[cover_keep]
+  gap_ids <- gap_ids[gap_keep]
+  vegcount_ids <- vegcount_ids[vegcount_keep]
+  fhd_ids <- fhd_ids[fhd_keep]
+  rugosity_ids <- rugosity_ids[rugosity_keep]
+  rumple_ids <- rumple_ids[rumple_keep]
+  bin_10plus_density_ids <- bin_10plus_density_ids[bin_10plus_density_keep]
+  chm_ids <- chm_ids[chm_keep]
+  bin_0to2_pct_ids <- bin_0to2_pct_ids[bin_0to2_pct_keep]
+  bin_2to5_pct_ids <- bin_2to5_pct_ids[bin_2to5_pct_keep]
+  bin_5to10_pct_ids <- bin_5to10_pct_ids[bin_5to10_pct_keep]
+  bin_10plus_pct_ids <- bin_10plus_pct_ids[bin_10plus_pct_keep]
+
+  # Build Common Tile IDs
+
+  common_tile_ids <- safe_reduce_intersect(list(
+    cover_ids = cover_ids,
+    gap_ids = gap_ids,
+    vegcount_ids = vegcount_ids,
+    fhd_ids = fhd_ids,
+    rugosity_ids = rugosity_ids,
+    rumple_ids = rumple_ids,
+    bin_10plus_density_ids = bin_10plus_density_ids,
+    chm_ids = chm_ids,
+    bin_0to2_pct_ids = bin_0to2_pct_ids,
+    bin_2to5_pct_ids = bin_2to5_pct_ids,
+    bin_5to10_pct_ids = bin_5to10_pct_ids,
+    bin_10plus_pct_ids = bin_10plus_pct_ids
+  ))
+
+  if (length(common_tile_ids) == 0) {
+    warning("No common tile IDs found for cross-metric QA in ", utm_group_name, ". Returning empty tables.")
+
+    empty_results_table <- data.table::data.table(
+      subset_label = character(0),
+      utm_group = character(0),
+      tile_id = character(0)
+    )
+
+    empty_flag_table <- data.table::data.table(
+      subset_label = subset_label,
+      utm_group = utm_group_name,
+      n_tiles = 0,
+      n_flag_gap_fraction_not_inverse_of_cover = 0,
+      n_flag_cover_gap_not_strongly_negative = 0,
+      n_flag_chm_10plus_not_positive = 0,
+      n_flag_rugosity_rumple_not_positive = 0,
+      n_flag_fhd_not_increasing_with_bin_occupancy = 0
+    )
+
+    return(list(
+      cross_metric_results_table = empty_results_table,
+      cross_metric_flag_summary_table = empty_flag_table
+    ))
+  }
+
+  if (length(common_tile_ids) < min_tiles_warning) {
+    message(
+      "Cross-metric QA for ",
+      utm_group_name,
+      " is based on only ",
+      length(common_tile_ids),
+      " tiles. Interpret tile-to-tile summaries as subset QA, not full-landscape inference."
+    )
+  }
+
+  # Run Tile By Tile Checks
+
+  cross_metric_results_list <- lapply(common_tile_ids, function(single_tile_id) {
+
+    cover_raster <- terra::rast(cover_paths[cover_ids == single_tile_id][1])
+    gap_fraction_raster <- terra::rast(gap_fraction_paths[gap_ids == single_tile_id][1])
+    vegcount_raster <- terra::rast(vegcount_paths[vegcount_ids == single_tile_id][1])
+    fhd_raster <- terra::rast(fhd_paths[fhd_ids == single_tile_id][1])
+    rugosity_raster <- terra::rast(rugosity_paths[rugosity_ids == single_tile_id][1])
+    rumple_raster <- terra::rast(rumple_paths[rumple_ids == single_tile_id][1])
+    bin_10plus_density_raster <- terra::rast(bin_10plus_density_paths[bin_10plus_density_ids == single_tile_id][1])
+    chm_raster_1m <- terra::rast(chm_paths[chm_ids == single_tile_id][1])
+
+    bin_0to2_pct_raster <- terra::rast(bin_0to2_pct_paths[bin_0to2_pct_ids == single_tile_id][1])
+    bin_2to5_pct_raster <- terra::rast(bin_2to5_pct_paths[bin_2to5_pct_ids == single_tile_id][1])
+    bin_5to10_pct_raster <- terra::rast(bin_5to10_pct_paths[bin_5to10_pct_ids == single_tile_id][1])
+    bin_10plus_pct_raster <- terra::rast(bin_10plus_pct_paths[bin_10plus_pct_ids == single_tile_id][1])
+
+    # Aggregate CHM To 5m
+
+    chm_raster_5m <- terra::aggregate(
+      chm_raster_1m,
+      fact = 5,
+      fun = mean,
+      na.rm = TRUE
+    )
+
+    # Align Everything To Cover Grid
+
+    gap_fraction_raster <- align_raster_b_to_a(cover_raster, gap_fraction_raster)
+    vegcount_raster <- align_raster_b_to_a(cover_raster, vegcount_raster)
+    fhd_raster <- align_raster_b_to_a(cover_raster, fhd_raster)
+    rugosity_raster <- align_raster_b_to_a(cover_raster, rugosity_raster)
+    rumple_raster <- align_raster_b_to_a(cover_raster, rumple_raster)
+    bin_10plus_density_raster <- align_raster_b_to_a(cover_raster, bin_10plus_density_raster)
+    chm_raster_5m <- align_raster_b_to_a(cover_raster, chm_raster_5m)
+
+    bin_0to2_pct_raster <- align_raster_b_to_a(cover_raster, bin_0to2_pct_raster)
+    bin_2to5_pct_raster <- align_raster_b_to_a(cover_raster, bin_2to5_pct_raster)
+    bin_5to10_pct_raster <- align_raster_b_to_a(cover_raster, bin_5to10_pct_raster)
+    bin_10plus_pct_raster <- align_raster_b_to_a(cover_raster, bin_10plus_pct_raster)
+
+    # Pull Values
+
+    cover_values <- terra::values(cover_raster, mat = FALSE)
+    gap_fraction_values <- terra::values(gap_fraction_raster, mat = FALSE)
+    vegcount_values <- terra::values(vegcount_raster, mat = FALSE)
+    fhd_values <- terra::values(fhd_raster, mat = FALSE)
+    rugosity_values <- terra::values(rugosity_raster, mat = FALSE)
+    rumple_values <- terra::values(rumple_raster, mat = FALSE)
+    bin_10plus_density_values <- terra::values(bin_10plus_density_raster, mat = FALSE)
+    chm_values <- terra::values(chm_raster_5m, mat = FALSE)
+
+    bin_0to2_pct_values <- terra::values(bin_0to2_pct_raster, mat = FALSE)
+    bin_2to5_pct_values <- terra::values(bin_2to5_pct_raster, mat = FALSE)
+    bin_5to10_pct_values <- terra::values(bin_5to10_pct_raster, mat = FALSE)
+    bin_10plus_pct_values <- terra::values(bin_10plus_pct_raster, mat = FALSE)
+
+    vegetated_index <- which(is.finite(vegcount_values) & vegcount_values > 0)
+
+    # Check Gap Fraction Vs 1 Minus Cover
+
+    expected_gap_fraction_values <- 1 - cover_values
+
+    gap_fraction_check <- compute_safe_mean_abs_difference(
+      gap_fraction_values,
+      expected_gap_fraction_values,
+      min_pairs_required = min_pairs_required,
+      warning_label = paste0(utm_group_name, "_", single_tile_id, "_gap_vs_one_minus_cover")
+    )
+
+    # Check Cover Vs Gap Fraction
+
+    cover_gap_check <- compute_safe_cellwise_correlation(
+      cover_values,
+      gap_fraction_values,
+      min_pairs_required = min_pairs_required,
+      warning_label = paste0(utm_group_name, "_", single_tile_id, "_cover_vs_gap")
+    )
+
+    # Check CHM Vs 10m Plus Density
+
+    chm_density_check <- compute_safe_cellwise_correlation(
+      chm_values,
+      bin_10plus_density_values,
+      min_pairs_required = min_pairs_required,
+      warning_label = paste0(utm_group_name, "_", single_tile_id, "_chm_vs_10plus_density")
+    )
+
+    # Check Rugosity Vs Rumple
+
+    rugosity_rumple_check <- compute_safe_cellwise_correlation(
+      rugosity_values,
+      rumple_values,
+      min_pairs_required = min_pairs_required,
+      warning_label = paste0(utm_group_name, "_", single_tile_id, "_rugosity_vs_rumple")
+    )
+
+    # Check FHD Vs Occupied Bin Count
+
+    occupied_bin_count_values <- rep(NA_real_, length(bin_0to2_pct_values))
+
+    occupied_bin_count_values[] <-
+      (bin_0to2_pct_values > 0) +
+      (bin_2to5_pct_values > 0) +
+      (bin_5to10_pct_values > 0) +
+      (bin_10plus_pct_values > 0)
+
+    fhd_bin_check <- compute_safe_cellwise_correlation(
+      fhd_values,
+      occupied_bin_count_values,
+      min_pairs_required = min_pairs_required,
+      warning_label = paste0(utm_group_name, "_", single_tile_id, "_fhd_vs_bin_occupancy")
+    )
+
+    # Helpful Means For Interpretation
+
+    mean_cover_vegetated <- if (length(vegetated_index) == 0) NA_real_ else mean(cover_values[vegetated_index], na.rm = TRUE)
+    mean_gap_fraction_vegetated <- if (length(vegetated_index) == 0) NA_real_ else mean(gap_fraction_values[vegetated_index], na.rm = TRUE)
+    mean_fhd_vegetated <- if (length(vegetated_index) == 0) NA_real_ else mean(fhd_values[vegetated_index], na.rm = TRUE)
+    mean_occupied_bin_count_vegetated <- if (length(vegetated_index) == 0) NA_real_ else mean(occupied_bin_count_values[vegetated_index], na.rm = TRUE)
+
+    # Flag Suspicious Relationships
+
+    flag_gap_fraction_not_inverse_of_cover <- is.finite(gap_fraction_check$mad_value) &&
+      gap_fraction_check$mad_value > 0.001
+
+    flag_cover_gap_not_strongly_negative <- is.finite(cover_gap_check$correlation_value) &&
+      cover_gap_check$correlation_value > -0.95
+
+    flag_chm_10plus_not_positive <- is.finite(chm_density_check$correlation_value) &&
+      chm_density_check$correlation_value <= 0
+
+    flag_rugosity_rumple_not_positive <- is.finite(rugosity_rumple_check$correlation_value) &&
+      rugosity_rumple_check$correlation_value <= 0
+
+    flag_fhd_not_increasing_with_bin_occupancy <- is.finite(fhd_bin_check$correlation_value) &&
+      fhd_bin_check$correlation_value <= 0
+
+    data.table::data.table(
+      subset_label = subset_label,
+      utm_group = utm_group_name,
+      tile_id = single_tile_id,
+      gap_fraction_minus_one_minus_cover_mad = gap_fraction_check$mad_value,
+      n_pairs_gap_fraction_minus_one_minus_cover = gap_fraction_check$n_pairs_used,
+      flag_too_few_pairs_gap_fraction_minus_one_minus_cover = gap_fraction_check$flag_too_few_pairs,
+      cover_vs_gap_fraction_correlation = cover_gap_check$correlation_value,
+      n_pairs_cover_vs_gap_fraction = cover_gap_check$n_pairs_used,
+      flag_too_few_pairs_cover_vs_gap_fraction = cover_gap_check$flag_too_few_pairs,
+      chm_vs_10plus_density_correlation = chm_density_check$correlation_value,
+      n_pairs_chm_vs_10plus_density = chm_density_check$n_pairs_used,
+      flag_too_few_pairs_chm_vs_10plus_density = chm_density_check$flag_too_few_pairs,
+      rugosity_vs_rumple_correlation = rugosity_rumple_check$correlation_value,
+      n_pairs_rugosity_vs_rumple = rugosity_rumple_check$n_pairs_used,
+      flag_too_few_pairs_rugosity_vs_rumple = rugosity_rumple_check$flag_too_few_pairs,
+      fhd_vs_occupied_bin_count_correlation = fhd_bin_check$correlation_value,
+      n_pairs_fhd_vs_occupied_bin_count = fhd_bin_check$n_pairs_used,
+      flag_too_few_pairs_fhd_vs_occupied_bin_count = fhd_bin_check$flag_too_few_pairs,
+      mean_cover_vegetated = mean_cover_vegetated,
+      mean_gap_fraction_vegetated = mean_gap_fraction_vegetated,
+      mean_fhd_vegetated = mean_fhd_vegetated,
+      mean_occupied_bin_count_vegetated = mean_occupied_bin_count_vegetated,
+      flag_gap_fraction_not_inverse_of_cover = flag_gap_fraction_not_inverse_of_cover,
+      flag_cover_gap_not_strongly_negative = flag_cover_gap_not_strongly_negative,
+      flag_chm_10plus_not_positive = flag_chm_10plus_not_positive,
+      flag_rugosity_rumple_not_positive = flag_rugosity_rumple_not_positive,
+      flag_fhd_not_increasing_with_bin_occupancy = flag_fhd_not_increasing_with_bin_occupancy
+    )
+  })
+
+  cross_metric_results_table <- data.table::rbindlist(cross_metric_results_list, fill = TRUE)
+
+  cross_metric_flag_summary_table <- cross_metric_results_table[
+    ,
+    .(
+      n_tiles = .N,
+      n_flag_gap_fraction_not_inverse_of_cover = sum(flag_gap_fraction_not_inverse_of_cover, na.rm = TRUE),
+      n_flag_cover_gap_not_strongly_negative = sum(flag_cover_gap_not_strongly_negative, na.rm = TRUE),
+      n_flag_chm_10plus_not_positive = sum(flag_chm_10plus_not_positive, na.rm = TRUE),
+      n_flag_rugosity_rumple_not_positive = sum(flag_rugosity_rumple_not_positive, na.rm = TRUE),
+      n_flag_fhd_not_increasing_with_bin_occupancy = sum(flag_fhd_not_increasing_with_bin_occupancy, na.rm = TRUE),
+      n_flag_low_pair_support_any_check = sum(
+        flag_too_few_pairs_gap_fraction_minus_one_minus_cover |
+          flag_too_few_pairs_cover_vs_gap_fraction |
+          flag_too_few_pairs_chm_vs_10plus_density |
+          flag_too_few_pairs_rugosity_vs_rumple |
+          flag_too_few_pairs_fhd_vs_occupied_bin_count,
+        na.rm = TRUE
+      )
+    ),
+    by = .(subset_label, utm_group)
+  ]
+
+  data.table::fwrite(
+    cross_metric_results_table,
+    file.path(qa_output_root_dir, paste0("cross_metric_consistency_", utm_group_name, "_", subset_label, ".csv"))
+  )
+
+  data.table::fwrite(
+    cross_metric_flag_summary_table,
+    file.path(qa_output_root_dir, paste0("cross_metric_consistency_flags_", utm_group_name, "_", subset_label, ".csv"))
+  )
+
+  list(
+    cross_metric_results_table = cross_metric_results_table,
+    cross_metric_flag_summary_table = cross_metric_flag_summary_table
+  )
+}
+
+##### Define Helper To Read Raster Values For Distribution QA #####
+# Pull finite values from one raster and cap the total number kept so the QA subset does not use unnecessary memory
+
+read_finite_raster_values <- function(single_raster_path, max_values_per_file = 100000) {
+
+  raster_object <- terra::rast(single_raster_path)
+  raster_values <- terra::values(raster_object, mat = FALSE)
+  raster_values <- raster_values[is.finite(raster_values)]
+
+  if (length(raster_values) > max_values_per_file) {
+    set.seed(1)
+    raster_values <- sample(raster_values, size = max_values_per_file, replace = FALSE)
+  }
+
+  raster_values
+}
+
+
+##### Define Helper To Safely Summarize One Metric Distribution #####
+# Summarize distributions before modeling that is tolerant of small QA subsets and missing metric groups and clearly label these outputs as subset summaries
+
+summarize_metric_distribution <- function(metric_name,
+                                          raster_paths,
+                                          histogram_output_dir,
+                                          subset_label = qa_subset_label,
+                                          min_files_warning = 3) {
+
+  if (length(raster_paths) == 0) {
+    message("No files found for distribution QA metric group: ", metric_name)
+
+    return(data.table::data.table(
+      subset_label = subset_label,
+      metric_type = metric_name,
+      n_files = 0,
+      n_values_used = NA_real_,
+      min_value = NA_real_,
+      q01 = NA_real_,
+      q05 = NA_real_,
+      q25 = NA_real_,
+      median_value = NA_real_,
+      mean_value = NA_real_,
+      q75 = NA_real_,
+      q95 = NA_real_,
+      q99 = NA_real_,
+      max_value = NA_real_,
+      sd_value = NA_real_,
+      prop_zero = NA_real_,
+      prop_negative = NA_real_,
+      prop_gt_1 = NA_real_,
+      skew_indicator = NA_real_,
+      flag_zero_inflated = NA,
+      flag_negative_values = NA,
+      flag_values_gt_1 = NA,
+      flag_near_constant = NA,
+      flag_high_right_skew = NA,
+      flag_small_subset_file_count = NA
+    ))
+  }
+
+  if (length(raster_paths) < min_files_warning) {
+    message(
+      "Distribution QA for ",
+      metric_name,
+      " is based on only ",
+      length(raster_paths),
+      " raster files. Interpret as subset screening only."
+    )
+  }
+
+  metric_value_list <- lapply(raster_paths, read_finite_raster_values)
+  metric_values <- unlist(metric_value_list, use.names = FALSE)
+
+  if (length(metric_values) == 0) {
+    warning("No finite values found for distribution QA metric group: ", metric_name)
+
+    return(data.table::data.table(
+      subset_label = subset_label,
+      metric_type = metric_name,
+      n_files = length(raster_paths),
+      n_values_used = 0,
+      min_value = NA_real_,
+      q01 = NA_real_,
+      q05 = NA_real_,
+      q25 = NA_real_,
+      median_value = NA_real_,
+      mean_value = NA_real_,
+      q75 = NA_real_,
+      q95 = NA_real_,
+      q99 = NA_real_,
+      max_value = NA_real_,
+      sd_value = NA_real_,
+      prop_zero = NA_real_,
+      prop_negative = NA_real_,
+      prop_gt_1 = NA_real_,
+      skew_indicator = NA_real_,
+      flag_zero_inflated = NA,
+      flag_negative_values = NA,
+      flag_values_gt_1 = NA,
+      flag_near_constant = NA,
+      flag_high_right_skew = NA,
+      flag_small_subset_file_count = length(raster_paths) < min_files_warning
+    ))
+  }
+
+  quantile_values <- stats::quantile(
+    metric_values,
+    probs = c(0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99),
+    na.rm = TRUE,
+    names = FALSE
+  )
+
+  min_value <- min(metric_values, na.rm = TRUE)
+  max_value <- max(metric_values, na.rm = TRUE)
+  mean_value <- mean(metric_values, na.rm = TRUE)
+  sd_value <- stats::sd(metric_values, na.rm = TRUE)
+
+  prop_zero <- mean(metric_values == 0, na.rm = TRUE)
+  prop_negative <- mean(metric_values < 0, na.rm = TRUE)
+  prop_gt_1 <- mean(metric_values > 1, na.rm = TRUE)
+
+  skew_indicator <- if (isTRUE(sd_value > 0)) {
+    3 * (mean_value - quantile_values[4]) / sd_value
+  } else {
+    NA_real_
+  }
+
+  flag_zero_inflated <- is.finite(prop_zero) && prop_zero > 0.80
+  flag_negative_values <- is.finite(prop_negative) && prop_negative > 0
+  flag_values_gt_1 <- FALSE
+  flag_near_constant <- is.finite(sd_value) && sd_value < 1e-6
+  flag_high_right_skew <- is.finite(skew_indicator) && skew_indicator > 1
+
+  if (metric_name %in% c("cover_5m", "cover_f3_5m", "gap_fraction_res5m", "bin_percent_5m")) {
+    flag_values_gt_1 <- is.finite(prop_gt_1) && prop_gt_1 > 0
+  }
+
+  ##### Save Histogram #####
+
+  histogram_file_path <- file.path(
+    histogram_output_dir,
+    paste0("hist_", metric_name, "_", subset_label, ".png")
+  )
+
+  grDevices::png(histogram_file_path, width = 1400, height = 900, res = 150)
+
+  graphics::hist(
+    metric_values,
+    breaks = 60,
+    main = paste("Distribution:", metric_name, "|", subset_label),
+    xlab = paste(metric_name, "(", subset_label, ")")
+  )
+
+  graphics::abline(v = mean_value, lty = 2)
+  graphics::abline(v = quantile_values[4], lty = 3)
+
+  grDevices::dev.off()
+
+  data.table::data.table(
+    subset_label = subset_label,
+    metric_type = metric_name,
+    n_files = length(raster_paths),
+    n_values_used = length(metric_values),
+    min_value = min_value,
+    q01 = quantile_values[1],
+    q05 = quantile_values[2],
+    q25 = quantile_values[3],
+    median_value = quantile_values[4],
+    mean_value = mean_value,
+    q75 = quantile_values[5],
+    q95 = quantile_values[6],
+    q99 = quantile_values[7],
+    max_value = max_value,
+    sd_value = sd_value,
+    prop_zero = prop_zero,
+    prop_negative = prop_negative,
+    prop_gt_1 = prop_gt_1,
+    skew_indicator = skew_indicator,
+    flag_zero_inflated = flag_zero_inflated,
+    flag_negative_values = flag_negative_values,
+    flag_values_gt_1 = flag_values_gt_1,
+    flag_near_constant = flag_near_constant,
+    flag_high_right_skew = flag_high_right_skew,
+    flag_small_subset_file_count = length(raster_paths) < min_files_warning
+  )
+}
+
+##### Define Distribution QA Runner For One UTM Group #####
+# Build a metric-file map, summarize each metric distribution, and save subset-labeled histogram PNGs and CSV tables
+
+run_distribution_qa_for_one_group <- function(single_utm_dir_list,
+                                              utm_group_name,
+                                              qa_output_root_dir,
+                                              subset_label = qa_subset_label,
+                                              min_files_warning = 3) {
+
+  histogram_output_dir <- file.path(
+    qa_output_root_dir,
+    paste0("histograms_", utm_group_name, "_", subset_label)
+  )
+  dir.create(histogram_output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  metric_file_map <- list(
+    chm_res1m = safe_list_metric_files(single_utm_dir_list$chm_res1m, "_chm\\.tif$", paste0(utm_group_name, "_chm_res1m")),
+    rugosity_res5m = safe_list_metric_files(single_utm_dir_list$rugosity_res5m, "_rugosity.*\\.tif$", paste0(utm_group_name, "_rugosity_res5m")),
+    rumple_res5m = safe_list_metric_files(single_utm_dir_list$rumple_res5m, "_rumple_5m\\.tif$", paste0(utm_group_name, "_rumple_res5m")),
+    fhd_res5m = safe_list_metric_files(single_utm_dir_list$fhd_res5m, "_fhd_5m\\.tif$", paste0(utm_group_name, "_fhd_res5m")),
+    gap_fraction_res5m = safe_list_metric_files(single_utm_dir_list$gap_fraction_res5m, "_gapfrac_5m\\.tif$", paste0(utm_group_name, "_gap_fraction_res5m")),
+    complexity_res1m = safe_list_metric_files(single_utm_dir_list$complexity_res1m, "_complexity\\.tif$", paste0(utm_group_name, "_complexity_res1m")),
+    cover_5m = safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$summary, "_cover_5m\\.tif$", paste0(utm_group_name, "_cover_5m")),
+    cover_f3_5m = safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$summary, "_cover_f3_5m\\.tif$", paste0(utm_group_name, "_cover_f3_5m")),
+    dens_veg_total_5m = safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$summary, "_dens_veg_total_5m\\.tif$", paste0(utm_group_name, "_dens_veg_total_5m")),
+    vegcount_5m = safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$summary, "_vegcount_5m\\.tif$", paste0(utm_group_name, "_vegcount_5m")),
+    bin_density_5m = c(
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_0to2m, "_dens_5m\\.tif$", paste0(utm_group_name, "_bin_0to2_density")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_2to5m, "_dens_5m\\.tif$", paste0(utm_group_name, "_bin_2to5_density")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_5to10m, "_dens_5m\\.tif$", paste0(utm_group_name, "_bin_5to10_density")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_10mplus, "_dens_5m\\.tif$", paste0(utm_group_name, "_bin_10plus_density"))
+    ),
+    bin_percent_5m = c(
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_0to2m, "_pct_5m\\.tif$", paste0(utm_group_name, "_bin_0to2_pct")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_2to5m, "_pct_5m\\.tif$", paste0(utm_group_name, "_bin_2to5_pct")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_5to10m, "_pct_5m\\.tif$", paste0(utm_group_name, "_bin_5to10_pct")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_10mplus, "_pct_5m\\.tif$", paste0(utm_group_name, "_bin_10plus_pct"))
+    ),
+    bin_presence_5m = c(
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_0to2m, "_present_5m\\.tif$", paste0(utm_group_name, "_bin_0to2_present")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_2to5m, "_present_5m\\.tif$", paste0(utm_group_name, "_bin_2to5_present")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_5to10m, "_present_5m\\.tif$", paste0(utm_group_name, "_bin_5to10_present")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_10mplus, "_present_5m\\.tif$", paste0(utm_group_name, "_bin_10plus_present"))
+    ),
+    bin_meanZ_5m = c(
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_2to5m, "_meanZ_5m\\.tif$", paste0(utm_group_name, "_bin_2to5_meanZ")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_5to10m, "_meanZ_5m\\.tif$", paste0(utm_group_name, "_bin_5to10_meanZ")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_10mplus, "_meanZ_5m\\.tif$", paste0(utm_group_name, "_bin_10plus_meanZ"))
+    ),
+    bin_sdZ_5m = c(
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_2to5m, "_sdZ_5m\\.tif$", paste0(utm_group_name, "_bin_2to5_sdZ")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_5to10m, "_sdZ_5m\\.tif$", paste0(utm_group_name, "_bin_5to10_sdZ")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_10mplus, "_sdZ_5m\\.tif$", paste0(utm_group_name, "_bin_10plus_sdZ"))
+    ),
+    bin_p95Z_5m = c(
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_2to5m, "_p95Z_5m\\.tif$", paste0(utm_group_name, "_bin_2to5_p95Z")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_5to10m, "_p95Z_5m\\.tif$", paste0(utm_group_name, "_bin_5to10_p95Z")),
+      safe_list_metric_files(single_utm_dir_list$vertical_bins_5m$bin_10mplus, "_p95Z_5m\\.tif$", paste0(utm_group_name, "_bin_10plus_p95Z"))
+    )
+  )
+
+  distribution_summary_list <- lapply(
+    names(metric_file_map),
+    function(single_metric_name) {
+      summarize_metric_distribution(
+        metric_name = single_metric_name,
+        raster_paths = metric_file_map[[single_metric_name]],
+        histogram_output_dir = histogram_output_dir,
+        subset_label = subset_label,
+        min_files_warning = min_files_warning
+      )
+    }
+  )
+
+  distribution_summary_table <- data.table::rbindlist(distribution_summary_list, fill = TRUE)
+  distribution_summary_table[, utm_group := utm_group_name]
+
+  data.table::fwrite(
+    distribution_summary_table,
+    file.path(qa_output_root_dir, paste0("metric_distribution_summary_", utm_group_name, "_", subset_label, ".csv"))
+  )
+
+  list(
+    distribution_summary_table = distribution_summary_table,
+    histogram_output_dir = histogram_output_dir
+  )
+}
+
+##### Debug Extracted Short Tile Codes For UTM11 #####
+
+cover_paths <- safe_list_metric_files(
+  utm11_dirs$vertical_bins_5m$summary,
+  "_cover_5m\\.tif$",
+  "utm11_cover_5m"
+)
+
+gap_fraction_paths <- safe_list_metric_files(
+  utm11_dirs$gap_fraction_res5m,
+  "_gapfrac_5m\\.tif$",
+  "utm11_gap_fraction_res5m"
+)
+
+vegcount_paths <- safe_list_metric_files(
+  utm11_dirs$vertical_bins_5m$summary,
+  "_vegcount_5m\\.tif$",
+  "utm11_vegcount_5m"
+)
+
+fhd_paths <- safe_list_metric_files(
+  utm11_dirs$fhd_res5m,
+  "_fhd_5m\\.tif$",
+  "utm11_fhd_res5m"
+)
+
+rugosity_paths <- safe_list_metric_files(
+  utm11_dirs$rugosity_res5m,
+  "_rugosity.*\\.tif$",
+  "utm11_rugosity_res5m"
+)
+
+rumple_paths <- safe_list_metric_files(
+  utm11_dirs$rumple_res5m,
+  "_rumple_5m\\.tif$",
+  "utm11_rumple_res5m"
+)
+
+bin_10plus_density_paths <- safe_list_metric_files(
+  utm11_dirs$vertical_bins_5m$bin_10mplus,
+  "_dens_5m\\.tif$",
+  "utm11_bin_10plus_density"
+)
+
+chm_paths <- safe_list_metric_files(
+  utm11_dirs$chm_res1m,
+  "_chm\\.tif$",
+  "utm11_chm_res1m"
+)
+
+bin_0to2_pct_paths <- safe_list_metric_files(
+  utm11_dirs$vertical_bins_5m$bin_0to2m,
+  "_pct_5m\\.tif$",
+  "utm11_bin_0to2_pct"
+)
+
+bin_2to5_pct_paths <- safe_list_metric_files(
+  utm11_dirs$vertical_bins_5m$bin_2to5m,
+  "_pct_5m\\.tif$",
+  "utm11_bin_2to5_pct"
+)
+
+bin_5to10_pct_paths <- safe_list_metric_files(
+  utm11_dirs$vertical_bins_5m$bin_5to10m,
+  "_pct_5m\\.tif$",
+  "utm11_bin_5to10_pct"
+)
+
+bin_10plus_pct_paths <- safe_list_metric_files(
+  utm11_dirs$vertical_bins_5m$bin_10mplus,
+  "_pct_5m\\.tif$",
+  "utm11_bin_10plus_pct"
+)
+
+debug_id_table <- data.table::rbindlist(list(
+  data.table::data.table(metric = "cover", file = basename(cover_paths), id = vapply(cover_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "gap_fraction", file = basename(gap_fraction_paths), id = vapply(gap_fraction_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "vegcount", file = basename(vegcount_paths), id = vapply(vegcount_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "fhd", file = basename(fhd_paths), id = vapply(fhd_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "rugosity", file = basename(rugosity_paths), id = vapply(rugosity_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "rumple", file = basename(rumple_paths), id = vapply(rumple_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "bin_10plus_density", file = basename(bin_10plus_density_paths), id = vapply(bin_10plus_density_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "chm", file = basename(chm_paths), id = vapply(chm_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "bin_0to2_pct", file = basename(bin_0to2_pct_paths), id = vapply(bin_0to2_pct_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "bin_2to5_pct", file = basename(bin_2to5_pct_paths), id = vapply(bin_2to5_pct_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "bin_5to10_pct", file = basename(bin_5to10_pct_paths), id = vapply(bin_5to10_pct_paths, extract_short_tile_code, character(1))),
+  data.table::data.table(metric = "bin_10plus_pct", file = basename(bin_10plus_pct_paths), id = vapply(bin_10plus_pct_paths, extract_short_tile_code, character(1)))
+), fill = TRUE)
+
+print(debug_id_table)
+
+intersect_test <- Reduce(intersect, list(
+  vapply(cover_paths, extract_short_tile_code, character(1)),
+  vapply(gap_fraction_paths, extract_short_tile_code, character(1)),
+  vapply(vegcount_paths, extract_short_tile_code, character(1)),
+  vapply(fhd_paths, extract_short_tile_code, character(1)),
+  vapply(rugosity_paths, extract_short_tile_code, character(1)),
+  vapply(rumple_paths, extract_short_tile_code, character(1)),
+  vapply(bin_10plus_density_paths, extract_short_tile_code, character(1)),
+  vapply(chm_paths, extract_short_tile_code, character(1)),
+  vapply(bin_0to2_pct_paths, extract_short_tile_code, character(1)),
+  vapply(bin_2to5_pct_paths, extract_short_tile_code, character(1)),
+  vapply(bin_5to10_pct_paths, extract_short_tile_code, character(1)),
+  vapply(bin_10plus_pct_paths, extract_short_tile_code, character(1))
+))
+
+print(intersect_test)
+
+##### Run Cross Metric Consistency QA For UTM11 #####
+
+utm11_cross_metric_qa_results <- run_cross_metric_consistency_qa_for_one_group(
+  single_utm_dir_list = utm11_dirs,
+  utm_group_name = "utm11",
+  qa_output_root_dir = metrics_qa_root_dir,
+  subset_label = qa_subset_label,
+  min_tiles_warning = 5,
+  min_pairs_required = 25
+)
+
+##### Run Cross Metric Consistency QA For UTM12 #####
+
+utm12_cross_metric_qa_results <- run_cross_metric_consistency_qa_for_one_group(
+  single_utm_dir_list = utm12_dirs,
+  utm_group_name = "utm12",
+  qa_output_root_dir = metrics_qa_root_dir,
+  subset_label = qa_subset_label,
+  min_tiles_warning = 5,
+  min_pairs_required = 25
+)
+
+##### Combine Cross Metric Consistency Tables #####
+
+all_cross_metric_consistency_table <- data.table::rbindlist(
+  list(
+    utm11_cross_metric_qa_results$cross_metric_results_table,
+    utm12_cross_metric_qa_results$cross_metric_results_table
+  ),
+  fill = TRUE
+)
+
+all_cross_metric_consistency_flags_table <- data.table::rbindlist(
+  list(
+    utm11_cross_metric_qa_results$cross_metric_flag_summary_table,
+    utm12_cross_metric_qa_results$cross_metric_flag_summary_table
+  ),
+  fill = TRUE
+)
+
+data.table::fwrite(
+  all_cross_metric_consistency_table,
+  file.path(metrics_qa_root_dir, paste0("cross_metric_consistency_ALL_", qa_subset_label, ".csv"))
+)
+
+data.table::fwrite(
+  all_cross_metric_consistency_flags_table,
+  file.path(metrics_qa_root_dir, paste0("cross_metric_consistency_flags_ALL_", qa_subset_label, ".csv"))
+)
+
+##### Run Distribution QA For UTM11 #####
+
+utm11_distribution_qa_results <- run_distribution_qa_for_one_group(
+  single_utm_dir_list = utm11_dirs,
+  utm_group_name = "utm11",
+  qa_output_root_dir = metrics_qa_root_dir,
+  subset_label = qa_subset_label,
+  min_files_warning = 3
+)
+
+##### Run Distribution QA For UTM12 #####
+
+utm12_distribution_qa_results <- run_distribution_qa_for_one_group(
+  single_utm_dir_list = utm12_dirs,
+  utm_group_name = "utm12",
+  qa_output_root_dir = metrics_qa_root_dir,
+  subset_label = qa_subset_label,
+  min_files_warning = 3
+)
+
+##### Combine Distribution QA Tables #####
+
+all_metric_distribution_summary_table <- data.table::rbindlist(
+  list(
+    utm11_distribution_qa_results$distribution_summary_table,
+    utm12_distribution_qa_results$distribution_summary_table
+  ),
+  fill = TRUE
+)
+
+data.table::fwrite(
+  all_metric_distribution_summary_table,
+  file.path(metrics_qa_root_dir, paste0("metric_distribution_summary_ALL_", qa_subset_label, ".csv"))
+)
+
+##### Print QA Summaries #####
+
+cat("\nCross-metric consistency QA completed.\n")
+cat("Subset label: ", qa_subset_label, "\n")
+cat("Saved tables to: ", metrics_qa_root_dir, "\n\n")
+print(all_cross_metric_consistency_flags_table)
+
+cat("\nDistribution QA completed.\n")
+cat("These summaries describe the QA subset, not the full landscape.\n")
+cat("Histogram folders:\n")
+cat("  ", utm11_distribution_qa_results$histogram_output_dir, "\n")
+cat("  ", utm12_distribution_qa_results$histogram_output_dir, "\n\n")
+
+print(all_metric_distribution_summary_table)
+```
+
 # Full Study Area Batched
 
 Now that the pipeline is defined and tested on a few tiles. We can apply it to our study area with a few adjustments. We can use the *future* package to parallel process the liDAR data and try to work through the pipeline faster. We will start by setting up this process and creating a place to save temp files. Temp files are a just-in-case measure since most of the data is connecting to a network. I will be saving the fully processed tiles in the network drive in case we have to access them later from a different computer.
@@ -1785,7 +3501,11 @@ for (single_step_directory in pipeline_step_directories) {
 
 Next we want to direct R to where our files live. As a note, each folder is the entire laz dataset for a single flight. File names are not consistent so we will have to tell R to take any LAZ file from within our network drive (R:/). Our shapefile for our study area is also found in this network drive and we will want to load it in because we only want to spend time on tiles that intersect our study area.
 
+
+## Find Tiles and Keep Those in Study Area
+
 ## Index Tiles in Study Area and Store as a Backup
+
 
 We want to read in the study area shapefile then repair any invalid geometry (if needed). We can then read in the tile keys and separate them out by South Hills and Albion as they'll need to be handled individually due to the CRS of the LAZ files.
 
@@ -2690,6 +4410,8 @@ cat(
 
 Okay with our tiles within our study area identified and backed up. We can continue with our pipeline.
 
+We will want to verify that the shapefile and LAZ/LAS files are in the same CRS otherwise this whole thing will fail.
+
 ## Load Study Area
 
 We want to load the study area and have R identify which tiles overlap it. Even though we have done something similar with the QGIS and our matched tiles, that was only using the tile code names. This will use the spatial extent of the tiles. First, we will want to verify that the shapefile and LAZ/LAS files are in the same CRS otherwise this whole thing will fail.
@@ -2829,7 +4551,9 @@ lidR::set_lidr_threads(1)
 # Output folders (on R:)
 run_root <- "R:/CACR_HSM_LiDAR"
 out_filtered <- file.path(run_root, "01_filtered")
+
 log_dir <- file.path(run_root, "04_logs")
+
 dir.create(out_filtered, recursive = TRUE, showWarnings = FALSE)
 dir.create(log_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -3733,6 +5457,7 @@ excluded_tiles_that_should_intersect <- lengths(st_intersects(elko_excluded_foot
 cat("Excluded Elko tiles that actually intersect South Hills:", sum(excluded_tiles_that_should_intersect), "\n")
 
 ```
+
 
 We will want to verify that the shapefile and LAZ/LAS files are in the same CRS otherwise this whole thing will fail.
 
@@ -8715,3 +10440,4 @@ print(
 ```
 
 
+2. Random CloudCompare check -->
