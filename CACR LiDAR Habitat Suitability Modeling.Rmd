@@ -536,11 +536,6 @@ for (k in seq_along(pipeline_files)) {
 
 We will then check the chunks in CloudCompare to ensure there isn't any canopy shearing or noise left behind.
 
-<<<<<<< HEAD
-We will then check the chunks in CloudCompare to ensure there isn't any canopy shearing or noise left behind.
-
-=======
->>>>>>> 70d7cf3c52405652949fed95f152a4b1372d098a
 ## Fix CRS Discrepancy
 
 Found there were multiple CRS, so we will want to account for this and run them under different sections
@@ -11247,11 +11242,10 @@ if (length(southhills_output_files) > 0) {
 }
 ```
 
-<<<<<<< HEAD
 Looks like everything ran! Next, I'll just verify that the tiles were saved to the folders and do a random QA check in CloudCompare.
 
-1.  Showing in South Hills folder --\> Yes, 765 tiles show up.
-=======
+Showing in South Hills folder --\> Yes, 765 tiles show up.
+
 ### Verify and QA Classifications
 
 Looks like everything ran! Next, I'll just verify that the tiles were saved to the folders and do a random QA check in CloudCompare. Showing in South Hills folder --\> Yes, 765 tiles show up in South Hills and 191 in the Albions.
@@ -13079,7 +13073,3 @@ if (nrow(southhills_gap_sf) > 0) {
   plot(sf::st_geometry(southhills_gap_sf), add = TRUE, border = "red")
 }
 ```
-
->>>>>>> 70d7cf3c52405652949fed95f152a4b1372d098a
-
-2.  Random CloudCompare check --\>
