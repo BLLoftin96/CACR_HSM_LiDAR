@@ -3013,12 +3013,23 @@ compute_gap_fraction_from_cover_folder(
 )
 
 
-##### Compute Rugosity From CHM #####
+##### Define Masked CHM Output Folders #####
 
-compute_rugosity_from_chm_folder <- function(chm_folder_path,
-                                             rugosity_folder_path,
-                                             utm_group,
-                                             selected_mask_label = selected_cliff_mask_label) {
+utm11_dirs$chm_masked_res1m <- file.path(dirname(utm11_dirs$chm_res1m), "chm_masked_res1m")
+utm12_dirs$chm_masked_res1m <- file.path(dirname(utm12_dirs$chm_res1m), "chm_masked_res1m")
+
+dir.create(utm11_dirs$chm_masked_res1m, showWarnings = FALSE, recursive = TRUE)
+dir.create(utm12_dirs$chm_masked_res1m, showWarnings = FALSE, recursive = TRUE)
+
+stopifnot(dir.exists(utm11_dirs$chm_masked_res1m))
+stopifnot(dir.exists(utm12_dirs$chm_masked_res1m))
+
+##### Write Masked CHM From CHM Folder #####
+
+write_masked_chm_from_folder <- function(chm_folder_path,
+                                         masked_chm_folder_path,
+                                         utm_group,
+                                         selected_mask_label = selected_cliff_mask_label) {
 
   chm_file_paths <- list.files(
     chm_folder_path,
@@ -3031,8 +3042,15 @@ compute_rugosity_from_chm_folder <- function(chm_folder_path,
 
   for (single_chm_file_path in chm_file_paths) {
 
-    chm_raster_1m <- terra::rast(single_chm_file_path)
     tile_key <- extract_short_tile_code(single_chm_file_path)
+
+    if (is.na(tile_key)) {
+      stop("Could not extract short tile code from CHM path: ", single_chm_file_path)
+    }
+
+    message("Writing masked CHM for tile: ", tile_key)
+
+    chm_raster_1m <- terra::rast(single_chm_file_path)
 
     forestkeep_mask_path <- get_selected_forestkeep_mask_path(
       tile_key = tile_key,
@@ -3042,79 +3060,164 @@ compute_rugosity_from_chm_folder <- function(chm_folder_path,
 
     forestkeep_mask_raster <- terra::rast(forestkeep_mask_path)
 
-    rugosity_sd_raster_5m <- terra::aggregate(
-      chm_raster_1m,
-      fact = 5,
-      fun = sd,
-      na.rm = TRUE
-    )
-
-    rugosity_sd_raster_5m <- apply_forestkeep_mask_to_raster(
-      metric_raster = rugosity_sd_raster_5m,
+    masked_chm_raster_1m <- apply_forestkeep_mask_to_raster(
+      metric_raster = chm_raster_1m,
       forestkeep_mask_raster = forestkeep_mask_raster,
       masked_value = NA_real_
     )
 
     safe_write_raster(
-  rugosity_sd_raster_5m,
-  file.path(rugosity_folder_path, paste0(tile_key, "_rugosity_sd_5m.tif"))
-)
+      masked_chm_raster_1m,
+      file.path(masked_chm_folder_path, paste0(tile_key, "_chm_masked_1m.tif"))
+    )
   }
 
   invisible(NULL)
 }
 
 
-compute_rugosity_from_chm_folder(
-  utm11_dirs$chm_res1m,
-  utm11_dirs$rugosity_res5m,
+##### Run Masked CHM Write #####
+
+write_masked_chm_from_folder(
+  chm_folder_path = utm11_dirs$chm_res1m,
+  masked_chm_folder_path = utm11_dirs$chm_masked_res1m,
   utm_group = "utm11"
 )
 
-compute_rugosity_from_chm_folder(
-  utm12_dirs$chm_res1m,
-  utm12_dirs$rugosity_res5m,
+write_masked_chm_from_folder(
+  chm_folder_path = utm12_dirs$chm_res1m,
+  masked_chm_folder_path = utm12_dirs$chm_masked_res1m,
   utm_group = "utm12"
 )
 
+##### Quick QA Check For Masked CHM #####
 
-##### Compute Rumple From CHM #####
+qa_check_masked_chm_folder <- function(masked_chm_folder_path, n_preview = 5) {
 
-compute_rumple_from_chm_folder <- function(chm_folder_path,
-                                           rumple_folder_path,
-                                           utm_group,
-                                           selected_mask_label = selected_cliff_mask_label) {
-
-  chm_file_paths <- list.files(
-    chm_folder_path,
-    pattern = "_chm\\.(tif|grd)$",
+  masked_chm_file_paths <- list.files(
+    masked_chm_folder_path,
+    pattern = "_chm_masked_1m\\.tif$",
     full.names = TRUE,
     ignore.case = TRUE
   )
 
-  stopifnot(length(chm_file_paths) > 0)
+  stopifnot(length(masked_chm_file_paths) > 0)
 
-  for (single_chm_file_path in chm_file_paths) {
+  preview_paths <- head(masked_chm_file_paths, n_preview)
 
-    chm_raster_1m <- terra::rast(single_chm_file_path)
-    tile_key <- extract_short_tile_code(single_chm_file_path)
+  qa_table <- lapply(preview_paths, function(single_path) {
 
-    forestkeep_mask_path <- get_selected_forestkeep_mask_path(
-      tile_key = tile_key,
-      utm_group = utm_group,
-      selected_mask_label = selected_mask_label
+    single_raster <- terra::rast(single_path)
+    single_values <- terra::values(single_raster, mat = FALSE)
+
+    data.frame(
+      file_name = basename(single_path),
+      n_cells = length(single_values),
+      n_na = sum(is.na(single_values)),
+      pct_na = round(100 * mean(is.na(single_values)), 2),
+      min_value = suppressWarnings(min(single_values, na.rm = TRUE)),
+      max_value = suppressWarnings(max(single_values, na.rm = TRUE))
+    )
+  })
+
+  qa_table <- do.call(rbind, qa_table)
+  print(qa_table)
+
+  invisible(qa_table)
+}
+
+qa_check_masked_chm_folder(utm11_dirs$chm_masked_res1m)
+qa_check_masked_chm_folder(utm12_dirs$chm_masked_res1m)
+
+##### Compute Rugosity From Masked CHM #####
+
+compute_rugosity_from_masked_chm_folder <- function(masked_chm_folder_path,
+                                                    rugosity_folder_path) {
+
+  masked_chm_file_paths <- list.files(
+    masked_chm_folder_path,
+    pattern = "_chm_masked_1m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  stopifnot(length(masked_chm_file_paths) > 0)
+
+  for (single_masked_chm_file_path in masked_chm_file_paths) {
+
+    tile_key <- extract_short_tile_code(single_masked_chm_file_path)
+
+    if (is.na(tile_key)) {
+      stop("Could not extract short tile code from masked CHM path: ", single_masked_chm_file_path)
+    }
+
+    message("Computing rugosity from masked CHM for tile: ", tile_key)
+
+    masked_chm_raster_1m <- terra::rast(single_masked_chm_file_path)
+
+    rugosity_sd_raster_5m <- terra::aggregate(
+      masked_chm_raster_1m,
+      fact = 5,
+      fun = sd,
+      na.rm = TRUE
     )
 
-    forestkeep_mask_raster <- terra::rast(forestkeep_mask_path)
+    safe_write_raster(
+      rugosity_sd_raster_5m,
+      file.path(rugosity_folder_path, paste0(tile_key, "_rugosity_sd_5m.tif"))
+    )
+  }
+
+  invisible(NULL)
+}
+
+
+##### Run Rugosity From Masked CHM #####
+
+compute_rugosity_from_masked_chm_folder(
+  masked_chm_folder_path = utm11_dirs$chm_masked_res1m,
+  rugosity_folder_path = utm11_dirs$rugosity_res5m
+)
+
+compute_rugosity_from_masked_chm_folder(
+  masked_chm_folder_path = utm12_dirs$chm_masked_res1m,
+  rugosity_folder_path = utm12_dirs$rugosity_res5m
+)
+
+##### Compute Rumple From Masked CHM #####
+
+compute_rumple_from_masked_chm_folder <- function(masked_chm_folder_path,
+                                                  rumple_folder_path) {
+
+  masked_chm_file_paths <- list.files(
+    masked_chm_folder_path,
+    pattern = "_chm_masked_1m\\.tif$",
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+
+  stopifnot(length(masked_chm_file_paths) > 0)
+
+  for (single_masked_chm_file_path in masked_chm_file_paths) {
+
+    tile_key <- extract_short_tile_code(single_masked_chm_file_path)
+
+    if (is.na(tile_key)) {
+      stop("Could not extract short tile code from masked CHM path: ", single_masked_chm_file_path)
+    }
+
+    message("Computing rumple from masked CHM for tile: ", tile_key)
+
+    masked_chm_raster_1m <- terra::rast(single_masked_chm_file_path)
 
     chm_slope_radians <- terra::terrain(
-      chm_raster_1m,
+      masked_chm_raster_1m,
       v = "slope",
       unit = "radians",
       neighbors = 8
     )
 
-    cell_resolution <- terra::res(chm_raster_1m)
+    cell_resolution <- terra::res(masked_chm_raster_1m)
     planar_cell_area_m2 <- cell_resolution[1] * cell_resolution[2]
 
     surface_area_raster_1m <- planar_cell_area_m2 / cos(chm_slope_radians)
@@ -3142,33 +3245,27 @@ compute_rumple_from_chm_folder <- function(chm_folder_path,
 
     rumple_index_raster_5m <- surface_area_sum_raster_5m / planar_area_sum_raster_5m
 
-    rumple_index_raster_5m <- apply_forestkeep_mask_to_raster(
-      metric_raster = rumple_index_raster_5m,
-      forestkeep_mask_raster = forestkeep_mask_raster,
-      masked_value = NA_real_
-    )
-
     safe_write_raster(
-  rumple_index_raster_5m,
-  file.path(rumple_folder_path, paste0(tile_key, "_rumple_5m.tif"))
-)
+      rumple_index_raster_5m,
+      file.path(rumple_folder_path, paste0(tile_key, "_rumple_5m.tif"))
+    )
   }
 
   invisible(NULL)
 }
 
-compute_rumple_from_chm_folder(
-  utm11_dirs$chm_res1m,
-  utm11_dirs$rumple_res5m,
-  utm_group = "utm11"
+
+##### Run Rumple From Masked CHM #####
+
+compute_rumple_from_masked_chm_folder(
+  masked_chm_folder_path = utm11_dirs$chm_masked_res1m,
+  rumple_folder_path = utm11_dirs$rumple_res5m
 )
 
-compute_rumple_from_chm_folder(
-  utm12_dirs$chm_res1m,
-  utm12_dirs$rumple_res5m,
-  utm_group = "utm12"
+compute_rumple_from_masked_chm_folder(
+  masked_chm_folder_path = utm12_dirs$chm_masked_res1m,
+  rumple_folder_path = utm12_dirs$rumple_res5m
 )
-
 
 ##### Compute Point-Cloud Complexity Raster #####
 
@@ -3328,7 +3425,7 @@ print(basename(utm11_complexity_file_paths))
 print(basename(utm12_complexity_file_paths))
 ```
 
-Based on these the 57 and 60 slope with a patch size of 5 seem to work the best so this will be our starting point for the full study area. For the forest metrics, I am going to use the more conservative one for development and QA. 
+Based on these the 57 and 60 slope with a patch size of 5 seem to work the best so this will be our starting point for the full study area. For the forest metrics, I am going to use the more conservative one for development and QA.
 
 ## QA Forest Metrics
 
@@ -3853,9 +3950,9 @@ bin_10plus_density_paths <- safe_list_metric_files(
 )
 
 chm_paths <- safe_list_metric_files(
-  utm11_dirs$chm_res1m,
-  "_chm\\.tif$",
-  "utm11_chm_res1m"
+  utm11_dirs$chm_masked_res1m,
+  "_chm_masked_1m\\.tif$",
+  "utm11_chm_masked_res1m"
 )
 
 bin_0to2_pct_paths <- safe_list_metric_files(
@@ -4052,11 +4149,11 @@ read_finite_raster_values_for_skew_qa <- function(single_raster_path, max_values
 build_metric_file_map_for_skew_qa <- function(single_utm_dir_list, utm_group_name) {
 
   list(
-    chm_res1m = safe_list_metric_files(
-      single_utm_dir_list$chm_res1m,
-      "_chm\\.tif$",
-      paste0(utm_group_name, "_chm_res1m")
-    ),
+    chm_masked_res1m = safe_list_metric_files(
+  single_utm_dir_list$chm_masked_res1m,
+  "_chm_masked_1m\\.tif$",
+  paste0(utm_group_name, "_chm_masked_res1m")
+),
 
     rugosity_res5m = safe_list_metric_files(
       single_utm_dir_list$rugosity_res5m,
@@ -4589,43 +4686,169 @@ print(all_expanded_right_skew_summary_table[order(-q99_to_q95_ratio)])
 print(all_expanded_right_skew_summary_table[order(-prop_above_upper_outlier_fence)])
 ```
 
-Cross-metrics consistency table: This ensures that metrics agree with each other conceptually. Here we can see our gap fraction vs cover values make sense as gap fraction with values being 0 meaning the two values are internally consistent meaning the gap = 1 - cover is working. However, cover-gap are not strongly negative and this was flagged for every tile and we should check these in QGIS just to make sure they resemble reality. Flags like this can occur if some rasters contain a lot of 0s or 1s or if masking creates flatter areas. For the CHM vs. 10m bin, there aren't any means were the canopy is high where the upper canopy structure doesn't match which should indicate that the canopy surface metrics are not completely disconnected from our vertical structure.  The rumple vs. rugosity shows no flags and since they are generally metrics that are cohesive this is a good sign. The foliar height diversity and bin occupancy shows no flags as FHD is increasing with vegetation making this more defensible and believable. 
+#### **Per-file flagged table**
 
-Per-file flagged table: This table is looking for suspicious or extreme values most of the flags seem to be that there are duplicate files. This was to be expected, I had originally run this with 0 mask for cliffs which are the longer named tiles.
+This table was used to identify potentially suspicious or extreme values at the individual raster level. Most flagged entries were associated with metrics exhibiting strong right-skew or high proportions of zero values. Several duplicate entries were also observed (e.g., multiple versions of the same tile/metric combination), which likely reflect earlier processing steps prior to final naming standardization. These duplicates do not necessarily indicate an error in the metrics themselves but should be resolved prior to final summary generation to ensure that each tile contributes only one raster per metric.
 
-Right-skew summary table: This table summarizes metric families to see if they are pulled in one direction which may hold outliers. Top strongly right-skewed metrics were the mean_to_median_ration and the q99_to_q95_ratio. Density for bin 5m showed a mean/median ration of 18.62 and 3.70 for UTM 11 and 12, respectively, while also showing high q99/q95 ratios. This means high proportions of above upper outliers; however, this may be due to many zero cells or other low values while having few very high numbers in the canopy (or the like). UTM 11 appears to be more skewed due to a lower median and could be due to dense patches next to very open areas or tiles being dense and then very open. *For QGIS, we should check if high density cells do represent real dense stands or are they clustering on terrain artifacts/tile edges.* Percent bin 5m also had similar issues with a mean/median ratio of 9.12 and 2.78 for UTM 11 and 12, respectively, while also showing q99/q95 ratios = 1 and a lot of zeros. This acctually makes sense as percent rasters are bounded and often strongly skewed by a lot of absences, partial occupancy, and fewer cells dominated by that layer. *In QGIS check that the vegetation seems plausible and not thin lines running along edges or on terrain artifacts.* Vegcount and density of total vegetation both had mean/median ratios of 2.76 and 1.40 for UTM 11 and 12, respectively, while UTM 11 also was showing high q99/q95 ratio. These could be from mountainous forests having sparse/open cells, dense canopy with very high point counts, and some intermediate cells, so a right tail is pretty common. *We will want to check these in QGIS especially the upper 1-5% values for total vegetation density, veg count, and bin density.* Canopy Height Model had a mean/median ration of 4.5 and 2.74 for UTM 11 and 12, respectively, with a moderate q99/q95 ratio. This is a believable pattern in landscapes with many open cells, low vegetation, understory, plus some tall canopy created a natural  strongly right-skew.*Check in QGIS that this is not a skew caused by remaining cliffs.* Rugosity shows a more moderate skew with a mean/median ratio of 1.75 and 1.33 while rumple is 1.36 and 1.24 for UTM 11 and 12, respectively. These seem reasonable with both metrics being canopy surface indicators we would expect them to be similar and the mild skew is normal in areas with truly complex canopies. *Still inspect in QGIS but I would expect it to appear normal.* Gap fraction shows mean/median ratio of 1.05 and 2.50. These are ecologically possible if the UTM cells have some tiles with almost a completely closed canopy and others that are mostly open. Because gap fraction is bounded [0,1], skew can be driven by the mix of: open cells, closed cells, and masked/open-edge cells. *Check that 1 cells are real forest in QGIS.* The metrics bin_meanZ_5m, bin_sdZ_5m, bin_p95Z_5m all had modest ratios and plausable tails which means they look defensible but still check. Metrics cover_5m and cover_f3_5m also appear reasonable with similar medians and means with no odd tails indicating that this is being represented consistently. Foliar Height diversity had a mean lower than the median and was not strongly right-skewed. Indicating that this is bounded by the number of strata and tends to occupy a moderate range in structurally variable forests.
+Additionally, several rasters in UTM12 (e.g., tile 12TTM850725) were flagged as zero-inflated and near-constant, particularly for bin-based metrics (density, percent, and presence). These cases likely represent either true absence of vegetation in that stratum or strong exclusion by the applied forest-keep mask. These outputs are not inherently problematic but should be visually inspected to confirm that zeros correspond to ecologically plausible conditions rather than unintended masking artifacts.
 
-Things flagged as zero-inflated or near-constant: These include entries like: 12TTM850725_dens_5m, 12TTM850725_pct_5m, and 12TTM850725_present_5m which had prop_zero = 1, flag_zero_inflated = TRUE, and flag_near_constant = TRUE. This usually means two things: 1) that specific bin/tile combination truly had no vegetation in that stratum after masking, or 2) that the mask removed nearly everything in that stratum for that tile. For example, if a particular tile has very little canopy in a given vertical bin, or the selected forest-keep mask excluded most of the relevant area, then an all-zero raster is expected. To judge whether this is acceptable think: 
--   Is this the 0–2 m or some sparse stratum in a tile that is mostly open/rocky/non-forest? Then zero may be fine.
--   Is this the 10m+ or another major forest stratum in a tile that clearly has forest? Then it would be more concerning.
+#### **Right-skew summary table**
 
-Genuinely acceptable but still inspect:
+This table summarizes metric distributions across tiles to identify skewness patterns and potential outliers. Several metric families exhibited strong right-skew, particularly:
 
--   cover
--   focal cover
--   foliar height diversity
--   complexity
--   bin mean height
--   bin 95th percentile height
--   rumple
--   rugosity
+-    **Bin density (5 m)** — mean/median ratio ≈ 18.6 (UTM11) and 3.7 (UTM12), with high upper-tail spread (q99/q95 \> 2 in UTM11)
 
-Strong but skewed:
+-    **Bin percent (5 m)** — mean/median ratio ≈ 9.1 (UTM11) and 2.8 (UTM12), with many zero values and bounded upper limits
 
--   veg count
--   total density of vegetation
--   percent vegetation in bins
--   canopy height model
+-    **Vegetation count and total vegetation density** — mean/median ratios ≈ 2.7–2.8 (UTM11) and ≈ 1.4 (UTM12), with substantial upper tails
 
-Inspect closely in QGIS:
+-    **CHM (masked)** — mean/median ratios ≈ 4.6 (UTM11) and 2.7 (UTM12)
 
--   canopy height model
--   veg count
--   total density of vegetation
--   density of bins
--   rugosity
+These patterns indicate distributions with many low or zero values and relatively few high values, producing long right tails. In the context of a heterogeneous, mountainous forest landscape, this is ecologically expected. Many cells represent open areas, sparse vegetation, or masked terrain, while a smaller number of cells represent dense or tall canopy.
 
-Forest metrics appear internally coherent after application of the selected cm_s60_patch5 forest-keep mask. Cross-metric QA showed that mathematically linked metrics behaved as expected, including a zero-error inverse relationship between cover and gap fraction and consistent positive relationships among CHM, upper-canopy structural bins, rugosity, rumple, and FHD-related structure metrics. Distribution-based QA indicated that several metrics, especially CHM, total vegetation density, vegetation count, and vertical-bin density metrics, were strongly right-skewed. In the context of a patchy, mountainous forest landscape, this pattern is ecologically expected because many cells contain low or no vegetation while a smaller subset of cells contain tall or dense canopy. The most extreme upper tails therefore do not by themselves indicate error. However, these metrics remain the highest priority for visual QA because any residual cliff or terrain artifact would most likely appear in those upper tails. In contrast, cover, smoothed cover, FHD, point-cloud complexity, and the height-summary metrics for occupied bins showed more moderate or stable distributions and appear more defensible as direct model inputs. Zero-inflated or near-constant rasters were present for some tile-bin combinations, but these likely reflect true absence of vegetation within particular strata or strong exclusion by the terrain mask rather than systematic processing failure. The main remaining caution is that some folders still appear to contain duplicate outputs from earlier naming conventions, so final distribution summaries should be regenerated after folder cleanup to ensure each tile contributes only one current raster per metric.
+The strongest skew was observed in **bin density**, which also had the highest proportion of values above the upper outlier fence (≈12% in UTM11). This suggests a highly uneven distribution of vegetation within vertical strata, likely reflecting patchy forest structure rather than processing error.
+
+Moderate skew was observed in:
+
+-    Rugosity and rumple
+
+-    Gap fraction
+
+-    Complexity
+
+-    Bin percent
+
+These metrics showed some asymmetry but remained within expected ecological ranges and did not exhibit extreme outlier behavior.
+
+Minimal or symmetric distributions were observed in:
+
+-    Cover and focal cover
+
+-    Foliar height diversity (FHD)
+
+-    Bin presence
+
+-    Height summary metrics (meanZ, sdZ, p95Z)
+
+These metrics showed stable distributions and are less likely to be influenced by extreme values or artifacts.
+
+#### **Interpretation of skew and outliers**
+
+Strong right-skew in vegetation metrics is expected due to the combination of:
+
+-    large areas with little or no vegetation (low values)
+
+-    moderate vegetation across much of the landscape
+
+-    localized patches of dense or tall canopy (high values)
+
+However, these same patterns could also be produced by:
+
+-    residual terrain artifacts (e.g., cliffs misclassified as vegetation),
+
+-    tile-edge effects,
+
+-    masking inconsistencies
+
+Because of this, skew alone does not indicate an error, but it identifies metrics that require targeted spatial validation.
+
+#### **Metrics requiring prioritized QGIS inspection**
+
+Based on skew magnitude, upper-tail behavior, and ecological sensitivity, the following metrics should be prioritized for visual QA:
+
+**Highest priority (strong right tail / potential artifacts):**
+
+-    Bin density (5 m)
+
+-    Vegetation count
+
+-    Total vegetation density
+
+-    CHM (masked)
+
+**Moderate priority (skew present but likely ecological)**
+
+-    Bin percent (5 m)
+
+-    Gap fraction
+
+-    Rugosity
+
+-    Rumple
+
+For these metrics, QGIS inspection should focus on:
+
+-    whether extreme values cluster along tile edges or seams,
+
+-    whether high values correspond to real dense canopy patches,
+
+-    whether any values align with known terrain artifacts (e.g., cliffs)
+
+#### **Zero-inflated and near-constant metrics**
+
+Several raster outputs, particularly in UTM12 (e.g., tile 12TTM850725), were flagged as zero-inflated or near-constant. These include bin-based density, percent, and presence metrics where `prop_zero = 1`.
+
+These cases are likely explained by:
+
+1.   true absence of vegetation within a given vertical stratum, or
+
+2.   removal of most vegetation by the selected forest-keep mask
+
+These outputs are acceptable if they correspond to:
+
+-    rocky or sparsely vegetated areas
+
+-    strata that are genuinely absent (e.g., no tall canopy in a tile)
+
+However, they should be checked in QGIS to confirm that zeros are spatially consistent with landscape conditions and not the result of over-masking.
+
+#### **Overall interpretation**
+
+Forest metrics appear internally coherent following application of the selected **cm_s60_patch5 forest-keep mask**. Distribution-based QA indicates that several key metrics—particularly CHM, vegetation density, vegetation count, and bin density—are strongly right-skewed. In the context of a patchy, mountainous forest landscape, this pattern is ecologically expected and reflects the coexistence of open areas, moderate vegetation, and dense canopy patches.
+
+Most other metrics, including cover, focal cover, FHD, complexity, and height-summary metrics, exhibit stable and interpretable distributions, supporting their use as model inputs.
+
+The primary remaining uncertainty is associated with the upper tails of strongly skewed metrics, where both ecological signal and potential artifacts may occur. These metrics therefore require targeted spatial validation in QGIS to confirm that high-value cells correspond to real vegetation structure rather than terrain or processing artifacts.
+
+After resolving duplicate outputs and completing targeted visual QA, the metric set can be considered robust and suitable for downstream habitat suitability modeling.
+
+#### Potential for High Usability
+
+These metrics are highly stable and ecologically interpretable. They are less sensitive to extreme values and masking artifacts and therefore represent strong candidates for direct inclusion in habitat suitability modeling.
+
+1.  Cover
+
+2.  Foliar Hieght Diversity
+
+3.  Point-Cloud Complexity
+
+4.  Bin Presence
+
+5.  Bin Height Summaries (this includes SD which was put in below)
+
+#### Moderate-to-High (depends on QGIS QA)
+
+These metrics behaved as expected but showed moderate skew or bounded distributions. Their values are still ecologically meaningful, but interpretation should account for: bounded ranges (e.g., gap fraction [0–1]), sensitivity to canopy heterogeneity, and potential edge/mask effects.
+
+1.  Gap Fraction
+
+2.  Rugosity
+
+3.  Rumple
+
+4.  Bin Percent
+
+#### Moderate-to-Low (Depends on QGIS QA)
+
+These metrics are ecologically meaningful but need to be checked visually in QGIS as they are sensitive to residual cliffs, tile-edge effects, and LiDAR density inconsistencies.
+
+1.  Canopy Height Model
+
+2.  Vegetation Count
+
+3.  Total Vegetation Density
+
+4.  Bin Density
 
 ### Oops forgot Standard Deviation
 
@@ -5288,9 +5511,10 @@ print(masked_sdz_distribution_summary_table)
 cat("\nExpanded skew QA summary:\n")
 print(masked_sdz_expanded_skew_summary_table)
 ```
-Interpretation: 
 
-Across all bins and UTM zones the proportion of zero values was negligible and negative values were absent. This indicates that standard deviation was calculated reliably across all bins and that slope mask likely removed terrain artifacts well. There was a consistent increasing standard deviation with increasing canopy height. In the understory (2-5m) bin the standard deviation of UTM11 had an overall median of 0.78, mean of 0.70, and a q95 of 0.96 while UTM12 had an overall median of 0.83, mean of 0.80, and a q95 of 0.97 indicating that UTM12 was slightly more heterogeneous. In the midstory (5-10m), UTM11 had  an overall median of 1.30, mean of 1.15, and a q95 of 1.57 while UTM12 had an overall median of 1.37, mean of 1.28, and a q95 of 1.58. The higher values indicate a higher vertical heterogeneity in the midstory which could be driven by uneven-age or vertical mixing. In the Overstory (10+m), UTM11 had  an overall median of 1.33, mean of 1.44, a q95 of 3.12, q99 of 3.78, and a max of 7.61 while UTM12 had an overall median of 1.79, mean of 1.80, a q95 of 3.28, q99 of 3.81, and a max of 5.27. This had the highest variability with extended upper tails indicating that their is high heterogeneity, stands of mixed age, canopy gaps or patches next to tall trees, or high structural variation; however, this is not outside the realm of possibility as the upper outlier threshold was only exceeded ~0.1-0.7%. Mean-to-median ratios and q99-to-q95 ratios were not extreme (0.88-1.09 and 1.08-1.21, respectively) showing a stable distribution. *Note: The 0–2 m vegetation stratum was excluded from sdZ calculations due to known limitations in LiDAR sampling of near-ground vegetation. This layer is highly sensitive to occlusion, variable point density, and ground–vegetation mixing, which can lead to unstable or non-representative estimates of vertical variability. Consequently, sdZ was calculated only for the 2–5 m, 5–10 m, and 10 m+ strata, where point densities are more reliable and vertical structure is more ecologically meaningful.*
+Interpretation:
+
+Across all bins and UTM zones the proportion of zero values was negligible and negative values were absent. This indicates that standard deviation was calculated reliably across all bins and that slope mask likely removed terrain artifacts well. There was a consistent increasing standard deviation with increasing canopy height. In the understory (2-5m) bin the standard deviation of UTM11 had an overall median of 0.78, mean of 0.70, and a q95 of 0.96 while UTM12 had an overall median of 0.83, mean of 0.80, and a q95 of 0.97 indicating that UTM12 was slightly more heterogeneous. In the midstory (5-10m), UTM11 had an overall median of 1.30, mean of 1.15, and a q95 of 1.57 while UTM12 had an overall median of 1.37, mean of 1.28, and a q95 of 1.58. The higher values indicate a higher vertical heterogeneity in the midstory which could be driven by uneven-age or vertical mixing. In the Overstory (10+m), UTM11 had an overall median of 1.33, mean of 1.44, a q95 of 3.12, q99 of 3.78, and a max of 7.61 while UTM12 had an overall median of 1.79, mean of 1.80, a q95 of 3.28, q99 of 3.81, and a max of 5.27. This had the highest variability with extended upper tails indicating that their is high heterogeneity, stands of mixed age, canopy gaps or patches next to tall trees, or high structural variation; however, this is not outside the realm of possibility as the upper outlier threshold was only exceeded \~0.1-0.7%. Mean-to-median ratios and q99-to-q95 ratios were not extreme (0.88-1.09 and 1.08-1.21, respectively) showing a stable distribution. *Note: The 0–2 m vegetation stratum was excluded from sdZ calculations due to known limitations in LiDAR sampling of near-ground vegetation. This layer is highly sensitive to occlusion, variable point density, and ground–vegetation mixing, which can lead to unstable or non-representative estimates of vertical variability. Consequently, sdZ was calculated only for the 2–5 m, 5–10 m, and 10 m+ strata, where point densities are more reliable and vertical structure is more ecologically meaningful.*
 
 ### QGIS QA of Forest Metrics
 
